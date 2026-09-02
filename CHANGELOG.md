@@ -28,6 +28,13 @@ All notable changes to this project are documented here. The format is based on
   for scripting: `--json` prints the full result as JSON, `--output-uuid`
   prints only the relevant uuid(s)/token and nothing else. The two are
   mutually exclusive.
+- `project bom upload <bom-file>` command: uploads a CycloneDX BOM to a
+  project identified either by `--name`/`--version` (with `--auto-create`
+  and `--parent-name`/`--parent-version`/`--parent-uuid` for creating it
+  under a parent) or, mutually exclusively, directly by `--by-uuid`.
+  Supports `--is-latest`. Upload is asynchronous server-side, so the command
+  reports the tracking token and polls until processing completes (or
+  `--no-wait` to skip that and return immediately).
 - Connection settings loaded from `~/.dtrack/config.yaml` (`url`, `api-key`).
 - `--insecure` global flag to disable TLS verification.
 - Test suite covering the cleanup flow and the config loader.

@@ -69,8 +69,10 @@ If the file is missing, the CLI prints the path it looked for along with a
 template to create. The API key needs project **view** permissions for the
 search command, project **view** and **delete** permissions for the cleanup
 command, project **view** and **edit** permissions for the deactivate
-command, and project **view** and **create** permissions for the clone
-command (cloning creates a new project version).
+command, project **view** and **create** permissions for the clone command
+(cloning creates a new project version), and **BOM Upload** permission for
+the bom upload command (plus **Portfolio Management** or **Project Creation
+& Upload** if using `--auto-create`).
 
 TLS verification is the only connection setting kept on the command line: pass
 `--insecure` to disable certificate verification (not recommended).
@@ -228,6 +230,49 @@ Flags:
 Global flags: `--insecure` (connection URL and API key come from
 `~/.dtrack/config.yaml`, see [Configuration](#configuration)).
 
+### `project bom upload`
+
+Uploads a CycloneDX BOM (JSON or XML) to a project. The target project is
+identified either by name or, directly, by UUID:
+
+```bash
+dtrack project bom upload bom.json --name "Product A" --version 1.10.0
+dtrack project bom upload bom.json --by-uuid d4e1f9d0-1234-5678-9abc-def012345678
+```
+
+`--by-uuid` and `--name`/`--version` are mutually exclusive. With `--name`
+and no matching project, pass `--auto-create` to have Dependency-Track
+create it, optionally under a parent:
+
+```bash
+dtrack project bom upload bom.json \
+  --name "New Service" --version 1.0.0 --auto-create \
+  --parent-name "Product A" --parent-version prod \
+  --is-latest
+```
+
+Uploads are processed **asynchronously**: the command prints the tracking
+token immediately, then polls every couple of seconds and reports when
+processing finishes (or times out after five minutes). Pass `--no-wait` to
+skip polling and return right after the upload is accepted.
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--by-uuid UUID` | Identify the project directly by UUID, instead of `--name`/`--version`. |
+| `--name NAME` | Project name to upload to (or auto-create). |
+| `--version REV` | Project version to upload to (used with `--name`). |
+| `--auto-create` | Create the project named by `--name`/`--version` if it doesn't already exist. |
+| `--parent-name NAME` | Parent project name, used when auto-creating. |
+| `--parent-version REV` | Parent project version, used when auto-creating. |
+| `--parent-uuid UUID` | Parent project UUID, used when auto-creating. |
+| `--is-latest` | Mark the uploaded BOM as belonging to the latest version of the project. |
+| `--no-wait` | Report the tracking token and return immediately, without waiting for processing to finish. |
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+
 ## Layout
 
 ```
@@ -252,6 +297,10 @@ This client targets the v5 REST API contract:
   match server-side, not a substring/fuzzy search.
 - `project clone` uses `PUT /v1/project/clone`, which only *starts* the clone
   and returns a tracking token — there is no bulk or synchronous variant.
+- `project bom upload` uses `PUT /v1/bom`, which likewise only *starts* the
+  upload and returns a tracking token; processing status is polled via
+  `GET /v1/event/token/{uuid}` (the older `/v1/bom/token/{uuid}` is
+  deprecated in Dependency-Track in favor of the event-token endpoint).
 - List endpoints are paginated (100/page); the client follows `X-Total-Count`.
 
 ## Testing
@@ -261,7 +310,8 @@ go test ./...
 ```
 
 The command tests spin up an in-process mock Dependency-Track server and
-exercise the full cleanup, deactivate, search, and clone flows: interactive
-selection, dry-run, inactive filtering, the no-match path,
-confirmation/abort, source disambiguation, and `--json`/`--output-uuid`
-output.
+exercise the full cleanup, deactivate, search, clone, and bom upload flows:
+interactive selection, dry-run, inactive filtering, the no-match path,
+confirmation/abort, source disambiguation, `--json`/`--output-uuid` output,
+and BOM upload identification, auto-create, `--no-wait`, and processing
+polling (including its timeout).

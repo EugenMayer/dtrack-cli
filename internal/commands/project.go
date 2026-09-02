@@ -29,6 +29,7 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 	projectCmd.AddCommand(childrenCmd)
 	projectCmd.AddCommand(newProjectSearchCmd(flags))
 	projectCmd.AddCommand(newProjectCloneCmd(flags))
+	projectCmd.AddCommand(newBomCmd(flags))
 	return projectCmd
 }
 

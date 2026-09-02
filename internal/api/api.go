@@ -17,6 +17,9 @@
 //   - A project's "active" flag is toggled via a partial update,
 //     PATCH /v1/project/{uuid}. There is no bulk endpoint for this, so
 //     deactivating multiple projects means one PATCH per project.
+//   - PUT /v1/bom processes the upload asynchronously and returns a tracking
+//     token immediately; GET /v1/event/token/{uuid} reports whether that
+//     token's job is still queued/running.
 package api
 
 import (
@@ -399,4 +402,90 @@ func (c *Client) CloneProject(ctx context.Context, sourceUUID, newVersion string
 		return "", fmt.Errorf("decoding clone response: %w", derr)
 	}
 	return out.Token, nil
+}
+
+// BOMUploadOptions identifies the project to upload a BOM to and any
+// versioning behavior for the upload (PUT /v1/bom).
+type BOMUploadOptions struct {
+	// ProjectUUID identifies an existing project directly. When set, the
+	// Name/Version/AutoCreate/Parent* fields below are ignored by the server.
+	ProjectUUID string
+
+	// Name and Version identify the project by name: Dependency-Track
+	// resolves them to an existing project, or creates one when AutoCreate
+	// is set (optionally under the project named by Parent*).
+	Name    string
+	Version string
+
+	AutoCreate    bool
+	ParentName    string
+	ParentVersion string
+	ParentUUID    string
+
+	// IsLatest marks the uploaded BOM as belonging to the latest version of
+	// the project.
+	IsLatest bool
+}
+
+// bomSubmitRequest is the PUT /v1/bom payload.
+type bomSubmitRequest struct {
+	Project        string `json:"project,omitempty"`
+	AutoCreate     bool   `json:"autoCreate,omitempty"`
+	ProjectName    string `json:"projectName,omitempty"`
+	ProjectVersion string `json:"projectVersion,omitempty"`
+	ParentName     string `json:"parentName,omitempty"`
+	ParentVersion  string `json:"parentVersion,omitempty"`
+	ParentUUID     string `json:"parentUUID,omitempty"`
+	IsLatest       bool   `json:"isLatest,omitempty"`
+	Bom            string `json:"bom"`
+}
+
+// UploadBOM uploads a base64-encoded CycloneDX BOM via PUT /v1/bom. The
+// target project is identified either by opts.ProjectUUID or by
+// opts.Name/opts.Version (optionally auto-created). The upload is processed
+// asynchronously; the returned token can be polled with IsBOMProcessing.
+func (c *Client) UploadBOM(ctx context.Context, bomBase64 string, opts BOMUploadOptions) (string, error) {
+	req := bomSubmitRequest{
+		Project:        opts.ProjectUUID,
+		AutoCreate:     opts.AutoCreate,
+		ProjectName:    opts.Name,
+		ProjectVersion: opts.Version,
+		ParentName:     opts.ParentName,
+		ParentVersion:  opts.ParentVersion,
+		ParentUUID:     opts.ParentUUID,
+		IsLatest:       opts.IsLatest,
+		Bom:            bomBase64,
+	}
+
+	resp, err := c.do(ctx, http.MethodPut, "v1/bom", nil, req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var out struct {
+		Token string `json:"token"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return "", fmt.Errorf("decoding bom upload response: %w", derr)
+	}
+	return out.Token, nil
+}
+
+// IsBOMProcessing reports whether the background job for token is still
+// queued or running, via GET /v1/event/token/{uuid}.
+func (c *Client) IsBOMProcessing(ctx context.Context, token string) (bool, error) {
+	resp, err := c.do(ctx, http.MethodGet, "v1/event/token/"+token, nil, nil)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	var out struct {
+		Processing bool `json:"processing"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return false, fmt.Errorf("decoding token status: %w", derr)
+	}
+	return out.Processing, nil
 }
