@@ -52,7 +52,6 @@ jobs:
           cd dist
           if [ "$GOOS" = "windows" ]; then
             zip "${archive}.zip" "${binary}"
-            (cd .. && cp README.md LICENSE dist/) && zip "${archive}.zip"
             rm -f README.md LICENSE
           else
             cp ../README.md ../LICENSE .
