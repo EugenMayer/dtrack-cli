@@ -3,13 +3,10 @@
 [![CI](https://github.com/eugenmayer/dtrack-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/eugenmayer/dtrack-cli/actions/workflows/ci.yml)
 [![Release](https://github.com/eugenmayer/dtrack-cli/actions/workflows/release.yml/badge.svg)](https://github.com/eugenmayer/dtrack-cli/actions/workflows/release.yml)
 
-A command-line client for [OWASP Dependency-Track](https://dependencytrack.org/)
-**5.x** (tested against 5.1), written in Go 1.27. Commands are organized as
-Cobra groups and subgroups so more can be added over time.
-
-## Requirements
-
-- Go 1.27 or newer.
+A command-line client for [OWASP Dependency-Track](https://dependencytrack.org/) **5.x**.
+Helps to upload boms, cloning projects for CI/CD automation and remove child projects or batch deactivating those.
+It is and toolkit to make dtrack scale in CD/CD automations and administration, for multiple microservices of a project with
+multiple versions (which can phase out via deacitivation)
 
 ## Install
 
@@ -24,19 +21,20 @@ Or install from source with Go:
 go install github.com/eugenmayer/dtrack-cli/cmd/dtrack@latest
 ```
 
+or 
+
+```bash
+export DTRACK_VERSION=0.0.3
+curl -sL "https://github.com/EugenMayer/dtrack-cli/releases/download/${DTRACK_VERSION}/dtrack_${DTRACK_VERSION}_linux_amd64.tar.gz" | tar xz
+chmod +x ./dtrack
+```
+
 ## Build
 
 ```bash
 go mod tidy   # completes go.sum from your module proxy (see note below)
 go build -o dtrack ./cmd/dtrack
 ```
-
-> **Note on `go.sum`:** this project was assembled in a sandbox without access
-> to `proxy.golang.org` / `gopkg.in`, so the committed `go.sum` covers only the
-> modules that were reachable there. Running `go mod tidy` once in a normal
-> environment fills in the remaining transitive hashes (all standard,
-> upstream-published modules — `cobra` and its deps). The build and full test
-> suite pass on Go 1.27.0.
 
 Install into your `GOBIN`:
 
