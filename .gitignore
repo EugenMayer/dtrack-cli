@@ -1,0 +1,17 @@
+# Binaries
+/dtrack
+/dist/
+*.exe
+*.test
+*.out
+
+# Go workspace / vendor
+/vendor/
+go.work
+go.work.sum
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
