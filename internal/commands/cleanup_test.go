@@ -65,6 +65,16 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		{"uuid": "c4", "name": "worker", "version": "1.2.3", "active": false},
 	}
 
+	// allProjects is every project the mock server knows about: the fixed
+	// pool above, plus the simulated post-clone result once one exists.
+	allProjects := func() []proj {
+		all := append(append(append(append([]proj{}, collections...), nonCollection), searchTargets...), children...)
+		if clone != nil && clone.clonedProject != nil {
+			all = append(all, clone.clonedProject)
+		}
+		return all
+	}
+
 	writeJSON := func(w http.ResponseWriter, total int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Total-Count", strconv.Itoa(total))
@@ -174,11 +184,23 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		writeJSON(w, 1, proj{"processing": processing})
 	})
 	mux.HandleFunc("GET /api/v1/project/lookup", func(w http.ResponseWriter, r *http.Request) {
-		if clone != nil && clone.clonedProject != nil &&
-			clone.clonedProject["name"] == r.URL.Query().Get("name") &&
-			clone.clonedProject["version"] == r.URL.Query().Get("version") {
-			writeJSON(w, 1, clone.clonedProject)
-			return
+		name := r.URL.Query().Get("name")
+		version := r.URL.Query().Get("version")
+		for _, p := range allProjects() {
+			if p["name"] == name && p["version"] == version {
+				writeJSON(w, 1, p)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("GET /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		uuid := r.PathValue("uuid")
+		for _, p := range allProjects() {
+			if p["uuid"] == uuid {
+				writeJSON(w, 1, p)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
