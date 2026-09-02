@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/example/dtrack-cli/internal/api"
+	"github.com/eugenmayer/dtrack-cli/internal/api"
 	"github.com/spf13/cobra"
 )
 

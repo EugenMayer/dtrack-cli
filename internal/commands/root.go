@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/example/dtrack-cli/internal/api"
-	"github.com/example/dtrack-cli/internal/config"
+	"github.com/eugenmayer/dtrack-cli/internal/api"
+	"github.com/eugenmayer/dtrack-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 

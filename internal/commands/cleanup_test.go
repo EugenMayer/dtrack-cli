@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/dtrack-cli/internal/api"
+	"github.com/eugenmayer/dtrack-cli/internal/api"
 )
 
 type proj map[string]any

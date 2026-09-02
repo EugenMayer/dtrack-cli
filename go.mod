@@ -1,4 +1,4 @@
-module github.com/example/dtrack-cli
+module github.com/eugenmayer/dtrack-cli
 
 go 1.27
 

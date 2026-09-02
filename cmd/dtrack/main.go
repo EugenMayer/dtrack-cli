@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/example/dtrack-cli/internal/commands"
+	"github.com/eugenmayer/dtrack-cli/internal/commands"
 )
 
 func main() {
