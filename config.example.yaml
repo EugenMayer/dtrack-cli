@@ -3,9 +3,6 @@
 #   mkdir -p ~/.dtrack
 #   cp config.example.yaml ~/.dtrack/config.yaml
 #   chmod 600 ~/.dtrack/config.yaml
-#
-# The API key needs project view and delete permissions for the
-# `project children cleanup` command.
 
 url: https://dtrack.example.com
 api-key: odt_xxxxxxxx_replace_me
