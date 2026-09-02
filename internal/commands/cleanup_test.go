@@ -15,10 +15,19 @@ import (
 type proj map[string]any
 
 // cloneCapture records the PUT /v1/project/clone request body a test makes,
-// and lets the test override the "token" returned in the response.
+// lets the test override the "token" returned in the response, and scripts
+// how the async job that clone kicks off behaves:
+//   - processingSequence is returned by successive GET /v1/event/token/{uuid}
+//     polls, in order (the last value repeats once exhausted; a nil/empty
+//     sequence means "done immediately").
+//   - clonedProject, when set, is what GET /v1/project/lookup returns for a
+//     name+version match, simulating the finished cloned project.
 type cloneCapture struct {
-	request map[string]any
-	token   string // response token; defaults to "clone-token" when empty
+	request            map[string]any
+	token              string // response token; defaults to "clone-token" when empty
+	processingSequence []bool
+	pollCount          int
+	clonedProject      proj
 }
 
 func mockServer(t *testing.T, deleted *[]string) *httptest.Server {
@@ -151,6 +160,27 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 			}
 		}
 		writeJSON(w, 1, proj{"token": token})
+	})
+	mux.HandleFunc("GET /api/v1/event/token/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		processing := false
+		if clone != nil {
+			if clone.pollCount < len(clone.processingSequence) {
+				processing = clone.processingSequence[clone.pollCount]
+			} else if len(clone.processingSequence) > 0 {
+				processing = clone.processingSequence[len(clone.processingSequence)-1]
+			}
+			clone.pollCount++
+		}
+		writeJSON(w, 1, proj{"processing": processing})
+	})
+	mux.HandleFunc("GET /api/v1/project/lookup", func(w http.ResponseWriter, r *http.Request) {
+		if clone != nil && clone.clonedProject != nil &&
+			clone.clonedProject["name"] == r.URL.Query().Get("name") &&
+			clone.clonedProject["version"] == r.URL.Query().Get("version") {
+			writeJSON(w, 1, clone.clonedProject)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	})
 
 	return httptest.NewServer(mux)

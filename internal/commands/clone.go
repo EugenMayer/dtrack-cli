@@ -15,6 +15,7 @@ type cloneRunOptions struct {
 	clone      api.CloneOptions
 	jsonOutput bool
 	outputUUID bool
+	noWait     bool
 }
 
 func newProjectCloneCmd(flags *rootFlags) *cobra.Command {
@@ -32,8 +33,10 @@ NEW-VERSION is the version assigned to the cloned project.
 By default the clone carries none of the source project's tags, properties,
 dependencies, components, services, audit history, ACL, or policy
 violations over — opt in with the corresponding --include-* flag. Cloning is
-processed asynchronously by the Dependency-Track server, so this command
-reports the tracking token it returns, not the finished project.`,
+processed asynchronously by the Dependency-Track server: this command
+reports the tracking token it returns, then polls until processing
+completes and reports the resulting cloned project. Pass --no-wait to skip
+polling and just report the token.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := flags.newClient()
@@ -57,23 +60,29 @@ reports the tracking token it returns, not the finished project.`,
 	f.BoolVar(&opts.clone.MakeCloneLatest, "make-clone-latest", false, "Mark the cloned project as the latest version.")
 	f.BoolVar(&opts.jsonOutput, "json", false, "Print the result as JSON.")
 	f.BoolVar(&opts.outputUUID, "output-uuid", false,
-		"Print only the clone's tracking token/uuid, and nothing else.")
+		"Print only the cloned project's uuid (or, with --no-wait, the tracking token), and nothing else.")
+	f.BoolVar(&opts.noWait, "no-wait", false,
+		"Report the tracking token and return immediately, without waiting for the clone to finish.")
 	cmd.MarkFlagsMutuallyExclusive("json", "output-uuid")
 
 	return cmd
 }
 
-// cloneResult is the JSON shape printed by "project clone --json".
+// cloneResult is the JSON shape printed by "project clone --json". Project
+// is populated once the clone has finished processing (nil with --no-wait).
 type cloneResult struct {
-	Token         string `json:"token"`
-	SourceUUID    string `json:"sourceUuid"`
-	SourceName    string `json:"sourceName"`
-	SourceVersion string `json:"sourceVersion"`
-	NewVersion    string `json:"newVersion"`
+	Token         string       `json:"token"`
+	SourceUUID    string       `json:"sourceUuid"`
+	SourceName    string       `json:"sourceName"`
+	SourceVersion string       `json:"sourceVersion"`
+	NewVersion    string       `json:"newVersion"`
+	Project       *api.Project `json:"project,omitempty"`
 }
 
-// runClone resolves spec to a single source project, triggers the clone, and
-// reports the tracking token Dependency-Track returns for the async job.
+// runClone resolves spec to a single source project, triggers the clone,
+// and — unless opts.noWait — waits for it to finish processing and resolves
+// the resulting cloned project (same name as the source, at newVersion) to
+// report in place of the bare tracking token.
 func runClone(ctx context.Context, client *api.Client, spec, newVersion string, opts *cloneRunOptions, out io.Writer) error {
 	source, err := resolveProjectBySpec(ctx, client, spec)
 	if err != nil {
@@ -85,22 +94,58 @@ func runClone(ctx context.Context, client *api.Client, spec, newVersion string, 
 		return fmt.Errorf("clone failed: %w", err)
 	}
 
+	result := cloneResult{
+		Token:         token,
+		SourceUUID:    source.UUID,
+		SourceName:    source.Name,
+		SourceVersion: source.Version,
+		NewVersion:    newVersion,
+	}
+
+	// --json/--output-uuid print exactly one line/value at the very end and
+	// nothing else, so route the human-readable progress lines to a discard
+	// writer while those flags are set.
+	quiet := opts.jsonOutput || opts.outputUUID
+	progress := out
+	if quiet {
+		progress = io.Discard
+	}
+
+	fmt.Fprintf(progress, "Cloning %s -> %s (source uuid: %s)\n", source.Label(), newVersion, source.UUID)
+	fmt.Fprintf(progress, "Clone initiated. Token: %s\n", token)
+
+	if opts.noWait {
+		return reportCloneResult(out, opts, result)
+	}
+
+	if err := waitForTokenProcessing(ctx, client, token, "Clone is still being processed...", progress); err != nil {
+		return err
+	}
+
+	cloned, err := client.LookupProject(ctx, source.Name, newVersion)
+	if err != nil {
+		return fmt.Errorf("clone finished but the resulting project could not be found: %w", err)
+	}
+	result.Project = &cloned
+
+	fmt.Fprintf(progress, "Clone completed: %s (uuid: %s)\n", cloned.Label(), cloned.UUID)
+	return reportCloneResult(out, opts, result)
+}
+
+// reportCloneResult prints the final, single-line result for --output-uuid
+// or --json, or nothing further for the default human-readable mode (whose
+// progress lines were already printed by runClone).
+func reportCloneResult(out io.Writer, opts *cloneRunOptions, result cloneResult) error {
 	if opts.outputUUID {
-		fmt.Fprintln(out, token)
+		if result.Project != nil {
+			fmt.Fprintln(out, result.Project.UUID)
+		} else {
+			fmt.Fprintln(out, result.Token)
+		}
 		return nil
 	}
-
 	if opts.jsonOutput {
-		return printJSON(out, cloneResult{
-			Token:         token,
-			SourceUUID:    source.UUID,
-			SourceName:    source.Name,
-			SourceVersion: source.Version,
-			NewVersion:    newVersion,
-		})
+		return printJSON(out, result)
 	}
-
-	fmt.Fprintf(out, "Cloning %s -> %s (source uuid: %s)\n", source.Label(), newVersion, source.UUID)
-	fmt.Fprintf(out, "Clone initiated. Token: %s\n", token)
 	return nil
 }

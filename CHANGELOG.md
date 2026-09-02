@@ -22,12 +22,20 @@ All notable changes to this project are documented here. The format is based on
   `--include-dependencies`, `--include-components`, `--include-services`,
   `--include-audit-history`, `--include-acl`, `--include-policy-violations`,
   and `--make-clone-latest` flags mirroring Dependency-Track's clone options.
-  Cloning is asynchronous server-side, so the command reports the tracking
-  token Dependency-Track returns.
+  Cloning is asynchronous server-side: the command reports the tracking
+  token, then polls (via the same `GET /v1/event/token/{uuid}` mechanism as
+  `bom upload`) until processing finishes and reports the resulting cloned
+  project (uuid, name, version) instead of the bare token. `--no-wait` skips
+  polling and reports only the token.
 - `--json` and `--output-uuid` flags on `project search` and `project clone`
-  for scripting: `--json` prints the full result as JSON, `--output-uuid`
-  prints only the relevant uuid(s)/token and nothing else. The two are
-  mutually exclusive.
+  for scripting: `--json` prints the full result as JSON (for `clone`,
+  including the resolved cloned project once polling completes),
+  `--output-uuid` prints only the relevant uuid (for `clone`, the cloned
+  project's uuid, or the token with `--no-wait`) and nothing else. The two
+  are mutually exclusive.
+- `project delete` command: deletes a single project, identified either by
+  `--by-uuid` or by `--project-name`/`--version` (mutually exclusive), with
+  a confirmation prompt skippable via `--yes`.
 - `project bom upload <bom-file>` command: uploads a CycloneDX BOM to a
   project identified either by `--name`/`--version` (with `--auto-create`
   and `--parent-name`/`--parent-version`/`--parent-uuid` for creating it

@@ -68,11 +68,11 @@ chmod 600 ~/.dtrack/config.yaml
 If the file is missing, the CLI prints the path it looked for along with a
 template to create. The API key needs project **view** permissions for the
 search command, project **view** and **delete** permissions for the cleanup
-command, project **view** and **edit** permissions for the deactivate
-command, project **view** and **create** permissions for the clone command
-(cloning creates a new project version), and **BOM Upload** permission for
-the bom upload command (plus **Portfolio Management** or **Project Creation
-& Upload** if using `--auto-create`).
+and delete commands, project **view** and **edit** permissions for the
+deactivate command, project **view** and **create** permissions for the
+clone command (cloning creates a new project version), and **BOM Upload**
+permission for the bom upload command (plus **Portfolio Management** or
+**Project Creation & Upload** if using `--auto-create`).
 
 TLS verification is the only connection setting kept on the command line: pass
 `--insecure` to disable certificate verification (not recommended).
@@ -207,9 +207,19 @@ dtrack project clone "Product A@prod" 1.10.0 \
 ```
 
 Cloning is processed **asynchronously** by the Dependency-Track server: this
-command reports the tracking token it returns immediately, not the finished
-project. Use the Dependency-Track UI, or poll the server directly, to know
-when the clone has finished.
+command reports the tracking token immediately, then polls until processing
+finishes and reports the resulting **cloned project** (its uuid, name, and
+version) — not just the token:
+
+```
+Cloning Product A prod -> 1.10.0 (source uuid: d4e1f9d0-...)
+Clone initiated. Token: 3f9a7b21-...
+Clone is still being processed...
+Clone completed: Product A 1.10.0 (uuid: 8b6a2f11-...)
+```
+
+Pass `--no-wait` to skip polling and return right after the clone starts,
+reporting only the token (there is no project to resolve yet).
 
 Flags:
 
@@ -224,8 +234,39 @@ Flags:
 | `--include-acl` | Include the access control list in the clone. |
 | `--include-policy-violations` | Include policy violations in the clone. |
 | `--make-clone-latest` | Mark the cloned project as the latest version. |
-| `--json` | Print the result (token and resolved source project) as JSON. |
-| `--output-uuid` | Print only the clone's tracking token, and nothing else. Mutually exclusive with `--json`. |
+| `--no-wait` | Report the tracking token and return immediately, without waiting for the clone to finish. |
+| `--json` | Print the result as JSON: token, source project, and (unless `--no-wait`) the resolved cloned project. |
+| `--output-uuid` | Print only the cloned project's uuid (or, with `--no-wait`, the tracking token), and nothing else. Mutually exclusive with `--json`. |
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+
+### `project delete`
+
+Deletes a single project (and everything under it — components, findings,
+children — there is no undo). The project is identified either directly by
+`--by-uuid`, or by `--project-name` together with `--version`:
+
+```bash
+dtrack project delete --by-uuid d4e1f9d0-1234-5678-9abc-def012345678
+dtrack project delete --project-name "Product A" --version 1.9.0
+```
+
+Shows what it's about to delete and asks for confirmation unless `--yes` is
+given:
+
+```bash
+dtrack project delete --project-name "Product A" --version 1.9.0 --yes
+```
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--by-uuid UUID` | Identify the project directly by UUID, instead of `--project-name`/`--version`. |
+| `--project-name NAME` | Project name to delete (used with `--version`). |
+| `--version REV` | Project version to delete (used with `--project-name`). |
+| `--yes` | Skip the confirmation prompt (non-interactive deletion). |
 
 Global flags: `--insecure` (connection URL and API key come from
 `~/.dtrack/config.yaml`, see [Configuration](#configuration)).
@@ -295,12 +336,21 @@ This client targets the v5 REST API contract:
   with `{"active": false}` — there is no bulk endpoint for toggling `active`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
   match server-side, not a substring/fuzzy search.
+- `project delete` resolves `--project-name`/`--version` via
+  `GET /v1/project/lookup` (an exact-match, single-result lookup) and
+  `--by-uuid` via `GET /v1/project/{uuid}`, before deleting with
+  `DELETE /v1/project/{uuid}`.
 - `project clone` uses `PUT /v1/project/clone`, which only *starts* the clone
   and returns a tracking token — there is no bulk or synchronous variant.
 - `project bom upload` uses `PUT /v1/bom`, which likewise only *starts* the
-  upload and returns a tracking token; processing status is polled via
-  `GET /v1/event/token/{uuid}` (the older `/v1/bom/token/{uuid}` is
-  deprecated in Dependency-Track in favor of the event-token endpoint).
+  upload and returns a tracking token.
+- Processing status for both clone and BOM upload tokens is polled via the
+  same generic `GET /v1/event/token/{uuid}` (the older, upload-specific
+  `/v1/bom/token/{uuid}` is deprecated in Dependency-Track in favor of it).
+  Once a clone's token reports done, the resulting project is resolved via
+  `GET /v1/project/lookup` using the source project's name and the new
+  version — Dependency-Track's clone response itself carries only the
+  token, never the cloned project's uuid.
 - List endpoints are paginated (100/page); the client follows `X-Total-Count`.
 
 ## Testing
@@ -310,8 +360,9 @@ go test ./...
 ```
 
 The command tests spin up an in-process mock Dependency-Track server and
-exercise the full cleanup, deactivate, search, clone, and bom upload flows:
-interactive selection, dry-run, inactive filtering, the no-match path,
-confirmation/abort, source disambiguation, `--json`/`--output-uuid` output,
-and BOM upload identification, auto-create, `--no-wait`, and processing
-polling (including its timeout).
+exercise the full cleanup, deactivate, search, clone, delete, and bom upload
+flows: interactive selection, dry-run, inactive filtering, the no-match
+path, confirmation/abort, source disambiguation, `--json`/`--output-uuid`
+output, both `--by-uuid` and name/version project identification, BOM
+upload auto-create, and processing polling for both clone and BOM upload
+(including `--no-wait` and the poll timeout).

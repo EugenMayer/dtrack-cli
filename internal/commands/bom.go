@@ -7,18 +7,9 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/eugenmayer/dtrack-cli/internal/api"
 	"github.com/spf13/cobra"
-)
-
-// bomPollInterval and bomPollTimeout govern how "project bom upload" waits
-// for the server to finish processing an uploaded BOM. Tests override these
-// package vars to keep polling fast.
-var (
-	bomPollInterval = 2 * time.Second
-	bomPollTimeout  = 5 * time.Minute
 )
 
 // newBomCmd builds the "project bom" group and its subcommands.
@@ -126,30 +117,9 @@ func runBomUpload(ctx context.Context, client *api.Client, bomPath string, opts 
 	if opts.noWait {
 		return nil
 	}
-	return waitForBomProcessing(ctx, client, token, out)
-}
-
-// waitForBomProcessing polls the token's processing status until it
-// completes, bomPollTimeout elapses, or ctx is cancelled.
-func waitForBomProcessing(ctx context.Context, client *api.Client, token string, out io.Writer) error {
-	pollCtx, cancel := context.WithTimeout(ctx, bomPollTimeout)
-	defer cancel()
-
-	for {
-		processing, err := client.IsBOMProcessing(ctx, token)
-		if err != nil {
-			return err
-		}
-		if !processing {
-			fmt.Fprintln(out, "BOM processing completed.")
-			return nil
-		}
-		fmt.Fprintln(out, "BOM is still being processed...")
-
-		select {
-		case <-pollCtx.Done():
-			return fmt.Errorf("timed out waiting for BOM processing to finish (token %s); check status manually", token)
-		case <-time.After(bomPollInterval):
-		}
+	if err := waitForTokenProcessing(ctx, client, token, "BOM is still being processed...", out); err != nil {
+		return err
 	}
+	fmt.Fprintln(out, "BOM processing completed.")
+	return nil
 }

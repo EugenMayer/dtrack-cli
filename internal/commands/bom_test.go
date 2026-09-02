@@ -59,13 +59,14 @@ func mockBomServer(t *testing.T, capture *bomCapture) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-// withFastBomPolling shortens the package-level poll interval/timeout for
-// the duration of a test and restores them afterward.
-func withFastBomPolling(t *testing.T, interval, timeout time.Duration) {
+// withFastPolling shortens the shared pollInterval/pollTimeout package vars
+// (used by both "bom upload" and "clone" processing waits) for the duration
+// of a test and restores them afterward.
+func withFastPolling(t *testing.T, interval, timeout time.Duration) {
 	t.Helper()
-	origInterval, origTimeout := bomPollInterval, bomPollTimeout
-	bomPollInterval, bomPollTimeout = interval, timeout
-	t.Cleanup(func() { bomPollInterval, bomPollTimeout = origInterval, origTimeout })
+	origInterval, origTimeout := pollInterval, pollTimeout
+	pollInterval, pollTimeout = interval, timeout
+	t.Cleanup(func() { pollInterval, pollTimeout = origInterval, origTimeout })
 }
 
 func writeTempBom(t *testing.T, content string) string {
@@ -78,7 +79,7 @@ func writeTempBom(t *testing.T, content string) string {
 }
 
 func TestBomUpload_ByUUID_WaitsForProcessing(t *testing.T) {
-	withFastBomPolling(t, time.Millisecond, time.Second)
+	withFastPolling(t, time.Millisecond, time.Second)
 	capture := &bomCapture{processingSequence: []bool{true, false}}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()
@@ -111,7 +112,7 @@ func TestBomUpload_ByUUID_WaitsForProcessing(t *testing.T) {
 }
 
 func TestBomUpload_ByNameAutoCreateWithParentAndIsLatest(t *testing.T) {
-	withFastBomPolling(t, time.Millisecond, time.Second)
+	withFastPolling(t, time.Millisecond, time.Second)
 	capture := &bomCapture{processingSequence: []bool{false}}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()
@@ -198,7 +199,7 @@ func TestBomUpload_ByUUIDWithAutoCreateRejected(t *testing.T) {
 }
 
 func TestBomUpload_TimesOutIfNeverFinishes(t *testing.T) {
-	withFastBomPolling(t, time.Millisecond, 10*time.Millisecond)
+	withFastPolling(t, time.Millisecond, 10*time.Millisecond)
 	capture := &bomCapture{processingSequence: []bool{true}}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()

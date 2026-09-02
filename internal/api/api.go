@@ -481,7 +481,7 @@ type bomSubmitRequest struct {
 // UploadBOM uploads a base64-encoded CycloneDX BOM via PUT /v1/bom. The
 // target project is identified either by opts.ProjectUUID or by
 // opts.Name/opts.Version (optionally auto-created). The upload is processed
-// asynchronously; the returned token can be polled with IsBOMProcessing.
+// asynchronously; the returned token can be polled with IsTokenProcessing.
 func (c *Client) UploadBOM(ctx context.Context, bomBase64 string, opts BOMUploadOptions) (string, error) {
 	req := bomSubmitRequest{
 		Project:        opts.ProjectUUID,
@@ -510,9 +510,11 @@ func (c *Client) UploadBOM(ctx context.Context, bomBase64 string, opts BOMUpload
 	return out.Token, nil
 }
 
-// IsBOMProcessing reports whether the background job for token is still
-// queued or running, via GET /v1/event/token/{uuid}.
-func (c *Client) IsBOMProcessing(ctx context.Context, token string) (bool, error) {
+// IsTokenProcessing reports whether the background job identified by token
+// is still queued or running, via GET /v1/event/token/{uuid}. Dependency-
+// Track uses this same generic tracking token for every async job dispatched
+// through an event (BOM uploads, project clones, ...).
+func (c *Client) IsTokenProcessing(ctx context.Context, token string) (bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, "v1/event/token/"+token, nil, nil)
 	if err != nil {
 		return false, err
