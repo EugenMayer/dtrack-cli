@@ -4,31 +4,36 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/eugenmayer/dtrack-cli/internal/api"
 	"github.com/spf13/cobra"
 )
 
-// cloneRunOptions holds the flags for "project clone" beyond the two
-// positional arguments (source spec and new version).
+// cloneRunOptions holds the flags for "project clone" beyond the single
+// positional argument (the new version).
 type cloneRunOptions struct {
-	clone      api.CloneOptions
-	jsonOutput bool
-	outputUUID bool
-	noWait     bool
+	byUUID               string
+	sourceProjectName    string
+	sourceProjectVersion string
+	clone                api.CloneOptions
+	jsonOutput           bool
+	outputUUID           bool
+	noWait               bool
 }
 
 func newProjectCloneCmd(flags *rootFlags) *cobra.Command {
 	opts := &cloneRunOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "clone <name>[@source-version] <new-version>",
+		Use:   "clone <new-version>",
 		Short: "Clone a project into a new version",
 		Long: `Clone a project into a new version.
 
-NAME identifies the source project to clone; append '@<version>' to
-disambiguate projects that share a name across multiple versions.
-NEW-VERSION is the version assigned to the cloned project.
+The source project to clone is identified either directly by --by-uuid, or
+by --source-project-name together with --source-project-version (mutually
+exclusive with --by-uuid). NEW-VERSION is the version assigned to the
+cloned project.
 
 By default the clone carries none of the source project's tags, properties,
 dependencies, components, services, audit history, ACL, or policy
@@ -37,17 +42,21 @@ processed asynchronously by the Dependency-Track server: this command
 reports the tracking token it returns, then polls until processing
 completes and reports the resulting cloned project. Pass --no-wait to skip
 polling and just report the token.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-			return runClone(cmd.Context(), client, args[0], args[1], opts, cmd.OutOrStdout())
+			return runClone(cmd.Context(), client, args[0], opts, cmd.OutOrStdout())
 		},
 	}
 
 	f := cmd.Flags()
+	f.StringVar(&opts.byUUID, "by-uuid", "",
+		"Identify the source project directly by UUID, instead of --source-project-name/--source-project-version.")
+	f.StringVar(&opts.sourceProjectName, "source-project-name", "", "Source project name to clone (used with --source-project-version).")
+	f.StringVar(&opts.sourceProjectVersion, "source-project-version", "", "Source project version to clone (used with --source-project-name).")
 	f.BoolVar(&opts.clone.IncludeTags, "include-tags", false, "Include tags in the clone.")
 	f.BoolVar(&opts.clone.IncludeProperties, "include-properties", false, "Include properties in the clone.")
 	f.BoolVar(&opts.clone.IncludeDependencies, "include-dependencies", false, "Include dependencies (BOM) in the clone.")
@@ -64,6 +73,8 @@ polling and just report the token.`,
 	f.BoolVar(&opts.noWait, "no-wait", false,
 		"Report the tracking token and return immediately, without waiting for the clone to finish.")
 	cmd.MarkFlagsMutuallyExclusive("json", "output-uuid")
+	cmd.MarkFlagsMutuallyExclusive("by-uuid", "source-project-name")
+	cmd.MarkFlagsRequiredTogether("source-project-name", "source-project-version")
 
 	return cmd
 }
@@ -79,12 +90,32 @@ type cloneResult struct {
 	Project       *api.Project `json:"project,omitempty"`
 }
 
-// runClone resolves spec to a single source project, triggers the clone,
-// and — unless opts.noWait — waits for it to finish processing and resolves
-// the resulting cloned project (same name as the source, at newVersion) to
-// report in place of the bare tracking token.
-func runClone(ctx context.Context, client *api.Client, spec, newVersion string, opts *cloneRunOptions, out io.Writer) error {
-	source, err := resolveProjectBySpec(ctx, client, spec)
+// runClone resolves the source project identified by opts, triggers the
+// clone, and — unless opts.noWait — waits for it to finish processing and
+// resolves the resulting cloned project (same name as the source, at
+// newVersion) to report in place of the bare tracking token.
+func runClone(ctx context.Context, client *api.Client, newVersion string, opts *cloneRunOptions, out io.Writer) error {
+	byUUID := strings.TrimSpace(opts.byUUID)
+	sourceName := strings.TrimSpace(opts.sourceProjectName)
+	sourceVersion := strings.TrimSpace(opts.sourceProjectVersion)
+
+	if byUUID == "" && sourceName == "" {
+		return fmt.Errorf(
+			"the source project must be identified with either --by-uuid or --source-project-name/--source-project-version")
+	}
+
+	var (
+		source api.Project
+		err    error
+	)
+	if byUUID != "" {
+		source, err = client.GetProject(ctx, byUUID)
+	} else {
+		if sourceVersion == "" {
+			return fmt.Errorf("--source-project-version is required together with --source-project-name")
+		}
+		source, err = client.LookupProject(ctx, sourceName, sourceVersion)
+	}
 	if err != nil {
 		return err
 	}

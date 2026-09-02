@@ -1,10 +1,16 @@
 // Package config loads Dependency-Track connection settings from a YAML file
-// in the user's home directory (~/.dtrack/config.yaml).
+// in the user's home directory (~/.dtrack/config.yaml), optionally overridden
+// by environment variables.
 //
 // The file holds the server URL and API key:
 //
 //	url: https://dtrack.example.com
 //	api-key: odt_xxxxxxxx_...
+//
+// Either field may instead (or additionally) be supplied via the DT_BASE_URL
+// and DT_API_KEY environment variables, which take precedence over the file
+// when set. This lets scripted contexts (CI/CD, containers) configure the
+// client without a config file at all.
 //
 // TLS verification is not part of the file; it is controlled by the --insecure
 // flag on the command line.
@@ -25,6 +31,13 @@ import (
 const (
 	DirName  = ".dtrack"
 	FileName = "config.yaml"
+)
+
+// Environment variables that can supply (or override) connection settings
+// from the config file.
+const (
+	EnvBaseURL = "DT_BASE_URL"
+	EnvAPIKey  = "DT_API_KEY"
 )
 
 // ErrNotFound indicates the config file does not exist. Callers can use
@@ -71,22 +84,33 @@ func Load(verifyTLS bool) (Config, error) {
 
 // LoadFrom is like Load but reads from an explicit path. It is primarily useful
 // for tests.
+//
+// The config file is optional as long as both DT_BASE_URL and DT_API_KEY are
+// set: a missing file only produces ErrNotFound when neither the file nor
+// either environment variable supplies anything. Whichever fields the file
+// does supply are overridden by the environment variables when those are set.
 func LoadFrom(path string, verifyTLS bool) (Config, error) {
+	var fc fileConfig
+	fileExists := true
+
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Config{}, fmt.Errorf("%w: %s", ErrNotFound, path)
+	switch {
+	case err == nil:
+		if uerr := yaml.Unmarshal(data, &fc); uerr != nil {
+			return Config{}, fmt.Errorf("parsing config %s: %w", path, uerr)
 		}
+	case errors.Is(err, os.ErrNotExist):
+		fileExists = false
+	default:
 		return Config{}, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
-	var fc fileConfig
-	if err := yaml.Unmarshal(data, &fc); err != nil {
-		return Config{}, fmt.Errorf("parsing config %s: %w", path, err)
-	}
+	url := firstNonEmpty(os.Getenv(EnvBaseURL), fc.URL)
+	apiKey := firstNonEmpty(os.Getenv(EnvAPIKey), fc.APIKey)
 
-	url := strings.TrimSpace(fc.URL)
-	apiKey := strings.TrimSpace(fc.APIKey)
+	if url == "" && apiKey == "" && !fileExists {
+		return Config{}, fmt.Errorf("%w: %s", ErrNotFound, path)
+	}
 
 	var missing []string
 	if url == "" {
@@ -97,15 +121,27 @@ func LoadFrom(path string, verifyTLS bool) (Config, error) {
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf(
-			"config %s is missing required field(s): %s",
-			path, strings.Join(missing, ", "))
+			"missing required connection setting(s): %s (set them in %s, or via the %s/%s environment variables)",
+			strings.Join(missing, ", "), path, EnvBaseURL, EnvAPIKey)
 	}
 
 	return Config{URL: url, APIKey: apiKey, VerifyTLS: verifyTLS}, nil
 }
 
+// firstNonEmpty returns the first of vals that is non-empty after trimming
+// whitespace, or "" if all are empty.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if t := strings.TrimSpace(v); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 // SetupHint returns a short, user-facing message explaining how to create the
-// config file. It is shown when the file is missing.
+// config file (or set the equivalent environment variables). It is shown
+// when neither is present.
 func SetupHint() string {
 	path, err := DefaultPath()
 	if err != nil {
@@ -114,6 +150,7 @@ func SetupHint() string {
 	return fmt.Sprintf(
 		"Create %s with your server details:\n\n"+
 			"    url: https://dtrack.example.com\n"+
-			"    api-key: odt_xxxxxxxx_...\n",
-		path)
+			"    api-key: odt_xxxxxxxx_...\n\n"+
+			"Or set the %s and %s environment variables instead.\n",
+		path, EnvBaseURL, EnvAPIKey)
 }

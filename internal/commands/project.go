@@ -27,6 +27,7 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 	childrenCmd.AddCommand(newChildrenCleanupCmd(flags))
 	childrenCmd.AddCommand(newChildrenDeactivateCmd(flags))
 	projectCmd.AddCommand(childrenCmd)
+	projectCmd.AddCommand(newProjectGetCmd(flags))
 	projectCmd.AddCommand(newProjectSearchCmd(flags))
 	projectCmd.AddCommand(newProjectCloneCmd(flags))
 	projectCmd.AddCommand(newProjectDeleteCmd(flags))
@@ -344,28 +345,6 @@ func matchNamedProject(candidates []api.Project, spec string) (api.Project, erro
 			"%q is ambiguous (%d matches: %s); disambiguate with '<name>@<version>'",
 			spec, len(matches), strings.Join(labels, ", "))
 	}
-}
-
-// resolveProjectBySpec looks up every version of the named project (the part
-// of spec before an optional "@version" suffix) and resolves it down to
-// exactly one, the same way matchNamedProject does for a prefetched list.
-func resolveProjectBySpec(ctx context.Context, client *api.Client, spec string) (api.Project, error) {
-	name := spec
-	if i := strings.Index(spec, "@"); i >= 0 {
-		name = spec[:i]
-	}
-	if name == "" {
-		return api.Project{}, fmt.Errorf("project name must not be empty")
-	}
-
-	candidates, err := client.ListProjectsByName(ctx, name, false)
-	if err != nil {
-		return api.Project{}, err
-	}
-	if len(candidates) == 0 {
-		return api.Project{}, fmt.Errorf("no project found with name %q", name)
-	}
-	return matchNamedProject(candidates, spec)
 }
 
 func isYes(line string) bool {

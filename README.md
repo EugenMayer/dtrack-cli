@@ -65,10 +65,25 @@ EOF
 chmod 600 ~/.dtrack/config.yaml
 ```
 
-If the file is missing, the CLI prints the path it looked for along with a
-template to create. The API key needs project **view** permissions for the
-search command, project **view** and **delete** permissions for the cleanup
-and delete commands, project **view** and **edit** permissions for the
+Either setting can instead (or additionally) be supplied via environment
+variables, which take precedence over the file when set — handy for CI/CD
+or containers where a config file is inconvenient:
+
+```bash
+export DT_BASE_URL=https://dtrack.example.com
+export DT_API_KEY=odt_xxxxxxxx_...
+```
+
+The config file becomes entirely optional once both `DT_BASE_URL` and
+`DT_API_KEY` are set; either one alone just overrides that single field from
+the file.
+
+If neither the file nor the environment variables supply a setting, the CLI
+prints the path it looked for along with a template to create (or the
+environment variable names as an alternative). The API key needs project
+**view** permissions for the
+get and search commands, project **view** and **delete** permissions for the
+cleanup and delete commands, project **view** and **edit** permissions for the
 deactivate command, project **view** and **create** permissions for the
 clone command (cloning creates a new project version), and **BOM Upload**
 permission for the bom upload command (plus **Portfolio Management** or
@@ -152,6 +167,32 @@ It takes the same `--collection`, `--version`, `--include-inactive`,
 `--dry-run`, and `--yes` flags as `cleanup` (see above), only applied to
 deactivation instead of deletion.
 
+### `project get`
+
+Fetches a single project by UUID and prints its details.
+
+```bash
+dtrack project get d4e1f9d0-1234-5678-9abc-def012345678
+```
+
+```
+Name:       Product A
+Version:    1.10.0
+UUID:       d4e1f9d0-1234-5678-9abc-def012345678
+Classifier: APPLICATION
+Active:     true
+```
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--json` | Print the project as JSON. |
+| `--output-uuid` | Print only the project's uuid, and nothing else (mostly useful as a "does this uuid exist" check). Mutually exclusive with `--json`. |
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+
 ### `project search`
 
 Looks up every version of a project by its exact name and prints them.
@@ -188,12 +229,14 @@ Global flags: `--insecure` (connection URL and API key come from
 
 ### `project clone`
 
-Clones a project into a new version. `NAME` identifies the source project
-(append `@<version>` to disambiguate a name that has multiple versions);
-`NEW-VERSION` is the version assigned to the clone.
+Clones a project into a new version. `NEW-VERSION` is the version assigned
+to the clone; the source project is identified either directly by
+`--by-uuid`, or by `--source-project-name` together with
+`--source-project-version` (mutually exclusive with `--by-uuid`):
 
 ```bash
-dtrack project clone "Product A@prod" 1.10.0
+dtrack project clone 1.10.0 --source-project-name "Product A" --source-project-version prod
+dtrack project clone 1.10.0 --by-uuid d4e1f9d0-1234-5678-9abc-def012345678
 ```
 
 By default the clone carries **none** of the source project's tags,
@@ -201,7 +244,8 @@ properties, dependencies, components, services, audit history, ACL, or
 policy violations over — opt in per-category with the `--include-*` flags:
 
 ```bash
-dtrack project clone "Product A@prod" 1.10.0 \
+dtrack project clone 1.10.0 \
+  --source-project-name "Product A" --source-project-version prod \
   --include-components --include-dependencies --include-properties \
   --include-tags --include-acl --make-clone-latest
 ```
@@ -225,6 +269,9 @@ Flags:
 
 | Flag | Description |
 | --- | --- |
+| `--by-uuid UUID` | Identify the source project directly by UUID, instead of `--source-project-name`/`--source-project-version`. |
+| `--source-project-name NAME` | Source project name to clone (used with `--source-project-version`). |
+| `--source-project-version REV` | Source project version to clone (used with `--source-project-name`). |
 | `--include-tags` | Include tags in the clone. |
 | `--include-properties` | Include properties in the clone. |
 | `--include-dependencies` | Include dependencies (BOM) in the clone. |
@@ -297,6 +344,20 @@ token immediately, then polls every couple of seconds and reports when
 processing finishes (or times out after five minutes). Pass `--no-wait` to
 skip polling and return right after the upload is accepted.
 
+Pass `--skip-if-inactive` to look the project up first and skip the upload
+— with a warning, but exit code `0` — if it already exists and is inactive.
+This is meant for scripted/batch uploads where an inactive project is a
+normal "nothing to do here" case rather than a failure:
+
+```bash
+dtrack project bom upload bom.json --name "Product A" --version 1.9.0 --skip-if-inactive
+```
+
+A project that doesn't exist yet is never treated as inactive: with
+`--auto-create`, a not-found lookup just means the upload proceeds and
+creates it (new projects are always active); without `--auto-create`, a
+not-found project is still an error, same as without `--skip-if-inactive`.
+
 Flags:
 
 | Flag | Description |
@@ -309,6 +370,7 @@ Flags:
 | `--parent-version REV` | Parent project version, used when auto-creating. |
 | `--parent-uuid UUID` | Parent project UUID, used when auto-creating. |
 | `--is-latest` | Mark the uploaded BOM as belonging to the latest version of the project. |
+| `--skip-if-inactive` | If the project already exists and is inactive, skip the upload with a warning (exit code `0`) instead of uploading to it. |
 | `--no-wait` | Report the tracking token and return immediately, without waiting for processing to finish. |
 
 Global flags: `--insecure` (connection URL and API key come from
@@ -334,13 +396,17 @@ This client targets the v5 REST API contract:
   `DELETE` fallback.
 - Deactivation uses a per-project partial update, `PATCH /v1/project/{uuid}`
   with `{"active": false}` — there is no bulk endpoint for toggling `active`.
+- `project get` is a thin wrapper over `GET /v1/project/{uuid}`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
   match server-side, not a substring/fuzzy search.
 - `project delete` resolves `--project-name`/`--version` via
   `GET /v1/project/lookup` (an exact-match, single-result lookup) and
   `--by-uuid` via `GET /v1/project/{uuid}`, before deleting with
   `DELETE /v1/project/{uuid}`.
-- `project clone` uses `PUT /v1/project/clone`, which only *starts* the clone
+- `project clone` resolves the source project the same way `project delete`
+  does (`GET /v1/project/lookup` for `--source-project-name`/
+  `--source-project-version`, `GET /v1/project/{uuid}` for `--by-uuid`),
+  then clones it via `PUT /v1/project/clone`, which only *starts* the clone
   and returns a tracking token — there is no bulk or synchronous variant.
 - `project bom upload` uses `PUT /v1/bom`, which likewise only *starts* the
   upload and returns a tracking token.
@@ -351,6 +417,11 @@ This client targets the v5 REST API contract:
   `GET /v1/project/lookup` using the source project's name and the new
   version — Dependency-Track's clone response itself carries only the
   token, never the cloned project's uuid.
+- `project bom upload --skip-if-inactive` resolves the target project the
+  same way `project delete` does (`GET /v1/project/{uuid}` for `--by-uuid`,
+  `GET /v1/project/lookup` for `--name`/`--version`) before uploading, purely
+  client-side — Dependency-Track's BOM upload endpoint has no server-side
+  "skip if inactive" option.
 - List endpoints are paginated (100/page); the client follows `X-Total-Count`.
 
 ## Testing
@@ -360,9 +431,11 @@ go test ./...
 ```
 
 The command tests spin up an in-process mock Dependency-Track server and
-exercise the full cleanup, deactivate, search, clone, delete, and bom upload
-flows: interactive selection, dry-run, inactive filtering, the no-match
-path, confirmation/abort, source disambiguation, `--json`/`--output-uuid`
-output, both `--by-uuid` and name/version project identification, BOM
-upload auto-create, and processing polling for both clone and BOM upload
-(including `--no-wait` and the poll timeout).
+exercise the full get, cleanup, deactivate, search, clone, delete, and bom
+upload flows: interactive selection, dry-run, inactive filtering, the
+no-match path, confirmation/abort, `--json`/`--output-uuid` output, both
+`--by-uuid` and name/version project identification (across get, clone,
+delete, and bom upload), BOM upload auto-create, processing polling for
+both clone and BOM upload (including `--no-wait` and the poll timeout), and
+`--skip-if-inactive` (inactive/active/not-found, with and without
+`--auto-create`).
