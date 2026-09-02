@@ -66,11 +66,15 @@ func mockServer(t *testing.T, deleted *[]string) *httptest.Server {
 		writeJSON(w, len(data), items)
 	})
 	mux.HandleFunc("/api/v1/project/batchDelete", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			UUIDs []string `json:"uuids"`
+		// Dependency-Track expects a bare JSON array of UUID strings, which it
+		// deserializes into a Set<UUID>. Rejecting an object here mirrors the
+		// real server's HTTP 400 and guards against regressing to a wrapper.
+		var uuids []string
+		if err := json.NewDecoder(r.Body).Decode(&uuids); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		*deleted = body.UUIDs
+		*deleted = uuids
 		w.WriteHeader(http.StatusNoContent)
 	})
 

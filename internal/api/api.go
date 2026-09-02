@@ -256,15 +256,16 @@ func (c *Client) ListChildren(ctx context.Context, uuid string, excludeInactive 
 
 // BatchDelete deletes multiple projects in one request, falling back to
 // per-project deletes if the batch endpoint is unavailable on the server.
+//
+// The Dependency-Track endpoint (POST /v1/project/batchDelete) deserializes
+// its body directly into a Set<UUID>, so the payload is a bare JSON array of
+// UUID strings (["uuid1", "uuid2"]) — not an object wrapping them.
 func (c *Client) BatchDelete(ctx context.Context, uuids []string) error {
 	if len(uuids) == 0 {
 		return nil
 	}
-	payload := struct {
-		UUIDs []string `json:"uuids"`
-	}{UUIDs: uuids}
 
-	resp, err := c.do(ctx, http.MethodPost, "v1/project/batchDelete", nil, payload)
+	resp, err := c.do(ctx, http.MethodPost, "v1/project/batchDelete", nil, uuids)
 	if err != nil {
 		if strings.Contains(err.Error(), "HTTP 404") || strings.Contains(err.Error(), "HTTP 405") {
 			for _, u := range uuids {
