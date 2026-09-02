@@ -18,10 +18,10 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
+#          - goos: linux
+#            goarch: arm64
+#          - goos: darwin
+#            goarch: amd64
           - goos: darwin
             goarch: arm64
           - goos: windows
@@ -52,11 +52,11 @@ jobs:
           cd dist
           if [ "$GOOS" = "windows" ]; then
             zip "${archive}.zip" "${binary}"
-            (cd .. && cp README.md LICENSE dist/) && zip "${archive}.zip" README.md LICENSE
+            (cd .. && cp README.md LICENSE dist/) && zip "${archive}.zip"
             rm -f README.md LICENSE
           else
             cp ../README.md ../LICENSE .
-            tar -czf "${archive}.tar.gz" "${binary}" README.md LICENSE
+            tar -czf "${archive}.tar.gz" "${binary}"
             rm -f README.md LICENSE
           fi
           rm -f "${binary}"
