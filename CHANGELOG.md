@@ -61,3 +61,10 @@ All notable changes to this project are documented here. The format is based on
   (amd64/arm64) and attaches them, with checksums, to tagged GitHub Releases.
 - Build-time version injection via `-ldflags -X main.version`, surfaced through
   `dtrack --version`.
+
+### Fixed
+
+- `project children deactivate` no longer errors when a matched child is
+  already inactive. Dependency-Track's `PATCH /v1/project/{uuid}` responds
+  `304 Not Modified` (not `200`) when a deactivate request wouldn't change
+  anything; the client now treats that as success instead of a failure.

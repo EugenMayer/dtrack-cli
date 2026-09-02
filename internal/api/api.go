@@ -356,9 +356,17 @@ func (c *Client) DeleteProject(ctx context.Context, uuid string) error {
 // DeactivateProject sets a single project's "active" flag to false via a
 // partial update (PATCH /v1/project/{uuid}). Dependency-Track merges only the
 // fields present in the body, so a bare {"active": false} payload is enough.
+//
+// If the project is already inactive, Dependency-Track's PATCH returns
+// HTTP 304 Not Modified (nothing to change) rather than 200 — that is
+// treated as success here, since "already deactivated" isn't a failure for
+// a deactivate operation.
 func (c *Client) DeactivateProject(ctx context.Context, uuid string) error {
 	resp, err := c.do(ctx, http.MethodPatch, "v1/project/"+uuid, nil, map[string]bool{"active": false})
 	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 304") {
+			return nil
+		}
 		return err
 	}
 	resp.Body.Close()
