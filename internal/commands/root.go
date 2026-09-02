@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0"
-
 // rootFlags holds the persistent flags parsed on the root command. Connection
 // details (URL and API key) come from ~/.dtrack/config.yaml, not flags; only
 // TLS verification is exposed on the command line.
@@ -44,8 +42,9 @@ func (f *rootFlags) newClient() (*api.Client, error) {
 }
 
 // NewRootCmd builds the top-level "dtrack" command with its persistent flags
-// and all subcommands attached.
-func NewRootCmd() *cobra.Command {
+// and all subcommands attached. The version string is supplied by main (it is
+// injected at build time via -ldflags).
+func NewRootCmd(version string) *cobra.Command {
 	flags := &rootFlags{}
 
 	root := &cobra.Command{

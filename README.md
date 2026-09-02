@@ -1,5 +1,8 @@
 # dtrack — Dependency-Track CLI (Go)
 
+[![CI](https://github.com/eugenmayer/dtrack-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/eugenmayer/dtrack-cli/actions/workflows/ci.yml)
+[![Release](https://github.com/eugenmayer/dtrack-cli/actions/workflows/release.yml/badge.svg)](https://github.com/eugenmayer/dtrack-cli/actions/workflows/release.yml)
+
 A command-line client for [OWASP Dependency-Track](https://dependencytrack.org/)
 **5.x** (tested against 5.1), written in Go 1.27. Commands are organized as
 Cobra groups and subgroups so more can be added over time.
@@ -7,6 +10,19 @@ Cobra groups and subgroups so more can be added over time.
 ## Requirements
 
 - Go 1.27 or newer.
+
+## Install
+
+Download a prebuilt binary for your platform from the
+[latest release](https://github.com/eugenmayer/dtrack-cli/releases/latest),
+extract it, and put `dtrack` on your `PATH`. Each release ships binaries for
+Linux, macOS, and Windows (amd64/arm64) plus a `checksums.txt`.
+
+Or install from source with Go:
+
+```bash
+go install github.com/eugenmayer/dtrack-cli/cmd/dtrack@latest
+```
 
 ## Build
 

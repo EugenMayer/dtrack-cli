@@ -15,3 +15,8 @@ All notable changes to this project are documented here. The format is based on
 - Connection settings loaded from `~/.dtrack/config.yaml` (`url`, `api-key`).
 - `--insecure` global flag to disable TLS verification.
 - Test suite covering the cleanup flow and the config loader.
+- GitHub Actions CI workflow (gofmt, vet, race tests, build) and a release
+  workflow that cross-compiles binaries for Linux, macOS, and Windows
+  (amd64/arm64) and attaches them, with checksums, to tagged GitHub Releases.
+- Build-time version injection via `-ldflags -X main.version`, surfaced through
+  `dtrack --version`.

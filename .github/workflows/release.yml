@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          version="${GITHUB_REF_NAME}"
+          binary="dtrack"
+          if [ "$GOOS" = "windows" ]; then binary="dtrack.exe"; fi
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o "dist/${binary}" ./cmd/dtrack
+
+          # Package: tar.gz for unix, zip for windows. Include README and LICENSE.
+          archive="dtrack_${version}_${GOOS}_${GOARCH}"
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip "${archive}.zip" "${binary}"
+            (cd .. && cp README.md LICENSE dist/) && zip "${archive}.zip" README.md LICENSE
+            rm -f README.md LICENSE
+          else
+            cp ../README.md ../LICENSE .
+            tar -czf "${archive}.tar.gz" "${binary}" README.md LICENSE
+            rm -f README.md LICENSE
+          fi
+          rm -f "${binary}"
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtrack-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
