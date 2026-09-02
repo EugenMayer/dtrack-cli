@@ -11,6 +11,8 @@
 //     collectionLogic that is not "NONE".
 //   - GET /v1/project's "name" filter is an exact match (server-side it's
 //     built as "name == :name", not a LIKE/substring filter).
+//   - GET /v1/project/lookup?name=&version= resolves a single project by its
+//     exact name+version, 404ing if there is no match.
 //   - PUT /v1/project/clone processes the clone asynchronously and returns a
 //     tracking token immediately, not the finished project.
 //   - Bulk deletion is done through POST /v1/project/batchDelete.
@@ -248,6 +250,42 @@ func (c *Client) ListProjectsByName(ctx context.Context, name string, excludeIna
 	var out []Project
 	err := c.paginate(ctx, "v1/project", q, func(p Project) { out = append(out, p) })
 	return out, err
+}
+
+// GetProject fetches a single project by UUID via GET /v1/project/{uuid}.
+func (c *Client) GetProject(ctx context.Context, uuid string) (Project, error) {
+	resp, err := c.do(ctx, http.MethodGet, "v1/project/"+uuid, nil, nil)
+	if err != nil {
+		return Project{}, err
+	}
+	defer resp.Body.Close()
+
+	var p Project
+	if derr := json.NewDecoder(resp.Body).Decode(&p); derr != nil {
+		return Project{}, fmt.Errorf("decoding project: %w", derr)
+	}
+	return p, nil
+}
+
+// LookupProject resolves a project by its exact name and version via
+// GET /v1/project/lookup. Unlike ListProjectsByName, this returns a single
+// project (or a "not found" error), since name+version is unique.
+func (c *Client) LookupProject(ctx context.Context, name, version string) (Project, error) {
+	q := url.Values{}
+	q.Set("name", name)
+	q.Set("version", version)
+
+	resp, err := c.do(ctx, http.MethodGet, "v1/project/lookup", q, nil)
+	if err != nil {
+		return Project{}, err
+	}
+	defer resp.Body.Close()
+
+	var p Project
+	if derr := json.NewDecoder(resp.Body).Decode(&p); derr != nil {
+		return Project{}, fmt.Errorf("decoding project: %w", derr)
+	}
+	return p, nil
 }
 
 // ListCollectionProjects returns all projects that act as collection parents.
