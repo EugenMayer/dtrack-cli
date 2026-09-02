@@ -27,6 +27,7 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 	childrenCmd.AddCommand(newChildrenCleanupCmd(flags))
 	childrenCmd.AddCommand(newChildrenDeactivateCmd(flags))
 	projectCmd.AddCommand(childrenCmd)
+	projectCmd.AddCommand(newProjectGetCmd(flags))
 	projectCmd.AddCommand(newProjectSearchCmd(flags))
 	projectCmd.AddCommand(newProjectCloneCmd(flags))
 	projectCmd.AddCommand(newProjectDeleteCmd(flags))
