@@ -22,6 +22,10 @@ type bomCapture struct {
 	token              string // defaults to "bom-token" when empty
 	processingSequence []bool
 	pollCount          int
+	// knownProject, when set, is returned by GET /v1/project/{uuid} (if its
+	// uuid matches) and GET /v1/project/lookup (if its name+version match),
+	// simulating an existing project for --skip-if-inactive checks.
+	knownProject proj
 }
 
 func mockBomServer(t *testing.T, capture *bomCapture) *httptest.Server {
@@ -55,6 +59,24 @@ func mockBomServer(t *testing.T, capture *bomCapture) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]bool{"processing": processing})
+	})
+	mux.HandleFunc("GET /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		if capture != nil && capture.knownProject != nil && capture.knownProject["uuid"] == r.PathValue("uuid") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(capture.knownProject)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("GET /api/v1/project/lookup", func(w http.ResponseWriter, r *http.Request) {
+		if capture != nil && capture.knownProject != nil &&
+			capture.knownProject["name"] == r.URL.Query().Get("name") &&
+			capture.knownProject["version"] == r.URL.Query().Get("version") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(capture.knownProject)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	})
 	return httptest.NewServer(mux)
 }
@@ -210,5 +232,120 @@ func TestBomUpload_TimesOutIfNeverFinishes(t *testing.T) {
 	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected a timeout error, got: %v", err)
+	}
+}
+
+func TestBomUpload_SkipIfInactive_ByUUID(t *testing.T) {
+	capture := &bomCapture{
+		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": false},
+	}
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{byUUID: "proj-uuid", skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capture.request != nil {
+		t.Errorf("expected the upload to be skipped; got request %v", capture.request)
+	}
+	if !strings.Contains(out.String(), "Warning") || !strings.Contains(out.String(), "inactive") {
+		t.Errorf("expected an inactive-skip warning:\n%s", out.String())
+	}
+}
+
+func TestBomUpload_SkipIfInactive_ByNameVersion(t *testing.T) {
+	capture := &bomCapture{
+		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": false},
+	}
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{name: "Product A", version: "1.0.0", skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capture.request != nil {
+		t.Errorf("expected the upload to be skipped; got request %v", capture.request)
+	}
+	if !strings.Contains(out.String(), "Warning") || !strings.Contains(out.String(), "inactive") {
+		t.Errorf("expected an inactive-skip warning:\n%s", out.String())
+	}
+}
+
+func TestBomUpload_SkipIfInactive_ActiveProjectProceeds(t *testing.T) {
+	withFastPolling(t, time.Millisecond, time.Second)
+	capture := &bomCapture{
+		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": true},
+	}
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{byUUID: "proj-uuid", skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capture.request == nil {
+		t.Errorf("expected the upload to proceed for an active project")
+	}
+	if strings.Contains(out.String(), "inactive") {
+		t.Errorf("expected no inactive warning for an active project:\n%s", out.String())
+	}
+}
+
+func TestBomUpload_SkipIfInactive_AutoCreateNotFoundProceeds(t *testing.T) {
+	withFastPolling(t, time.Millisecond, time.Second)
+	capture := &bomCapture{} // no knownProject: name+version doesn't exist yet
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{name: "New Project", version: "1.0.0", autoCreate: true, skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capture.request == nil {
+		t.Errorf("expected the upload to proceed when auto-creating a not-yet-existing project")
+	}
+}
+
+func TestBomUpload_SkipIfInactive_NotFoundWithoutAutoCreateErrors(t *testing.T) {
+	capture := &bomCapture{} // no knownProject
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{name: "Does Not Exist", version: "1.0.0", skipIfInactive: true}
+	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	if err == nil {
+		t.Fatal("expected an error for a not-found project without --auto-create")
+	}
+	if capture.request != nil {
+		t.Errorf("expected no upload attempt; got request %v", capture.request)
+	}
+}
+
+func TestBomUpload_SkipIfInactive_ByUUIDNotFoundErrors(t *testing.T) {
+	capture := &bomCapture{} // no knownProject
+	srv := mockBomServer(t, capture)
+	defer srv.Close()
+
+	bomPath := writeTempBom(t, "{}")
+	var out strings.Builder
+	opts := &bomUploadOptions{byUUID: "does-not-exist", skipIfInactive: true}
+	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	if err == nil {
+		t.Fatal("expected an error for a not-found project uuid")
+	}
+	if capture.request != nil {
+		t.Errorf("expected no upload attempt; got request %v", capture.request)
 	}
 }
