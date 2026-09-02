@@ -396,6 +396,9 @@ This client targets the v5 REST API contract:
   `DELETE` fallback.
 - Deactivation uses a per-project partial update, `PATCH /v1/project/{uuid}`
   with `{"active": false}` — there is no bulk endpoint for toggling `active`.
+  Dependency-Track responds `304 Not Modified` (not `200`) when the project
+  is already inactive; the client treats that as success rather than an
+  error, so deactivating an already-inactive child is a harmless no-op.
 - `project get` is a thin wrapper over `GET /v1/project/{uuid}`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
   match server-side, not a substring/fuzzy search.

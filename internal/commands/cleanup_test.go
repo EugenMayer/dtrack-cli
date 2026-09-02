@@ -75,6 +75,15 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		return all
 	}
 
+	// activeState tracks each child's current "active" flag so the PATCH
+	// handler below can mirror Dependency-Track's real behavior: a PATCH
+	// that doesn't actually change anything returns 304 Not Modified rather
+	// than 200.
+	activeState := map[string]bool{}
+	for _, c := range children {
+		activeState[c["uuid"].(string)] = c["active"].(bool)
+	}
+
 	writeJSON := func(w http.ResponseWriter, total int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Total-Count", strconv.Itoa(total))
@@ -145,7 +154,9 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 	mux.HandleFunc("PATCH /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
 		// Partial update: Dependency-Track deserializes the body straight into
 		// a Project and merges only the fields present, so a bare
-		// {"active": false} payload is enough to deactivate.
+		// {"active": false} payload is enough to deactivate. Mirrors the real
+		// server's "nothing changed" behavior: if the requested value matches
+		// the project's current state, respond 304 Not Modified instead of 200.
 		var body map[string]bool
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -154,7 +165,14 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		if deactivated != nil {
 			*deactivated = append(*deactivated, r.PathValue("uuid"))
 		}
-		writeJSON(w, 1, proj{"uuid": r.PathValue("uuid"), "active": body["active"]})
+		uuid := r.PathValue("uuid")
+		wantActive, hasActive := body["active"]
+		if hasActive && activeState[uuid] == wantActive {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		activeState[uuid] = wantActive
+		writeJSON(w, 1, proj{"uuid": uuid, "active": wantActive})
 	})
 	mux.HandleFunc("PUT /api/v1/project/clone", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -318,8 +336,14 @@ func TestDeactivate_Interactive(t *testing.T) {
 	in := strings.NewReader("1\n1.2.3\ny\n")
 	opts := &childrenActionOptions{includeInactive: true}
 
+	// c4 (worker) is already inactive, so deactivating it is a no-op on the
+	// server: Dependency-Track responds 304 Not Modified rather than 200,
+	// which must not surface as an error.
 	if err := runDeactivate(context.Background(), newTestClient(srv.URL), opts, in, &out); err != nil {
 		t.Fatalf("runDeactivate returned error: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Deactivated 3 project(s).") {
+		t.Errorf("expected a success summary despite the already-inactive project:\n%s", out.String())
 	}
 
 	if deleted != nil {
