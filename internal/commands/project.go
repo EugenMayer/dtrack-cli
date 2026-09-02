@@ -25,12 +25,17 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	childrenCmd.AddCommand(newChildrenCleanupCmd(flags))
+	childrenCmd.AddCommand(newChildrenDeactivateCmd(flags))
 	projectCmd.AddCommand(childrenCmd)
+	projectCmd.AddCommand(newProjectSearchCmd(flags))
+	projectCmd.AddCommand(newProjectCloneCmd(flags))
 	return projectCmd
 }
 
-// cleanupOptions holds the flags specific to "project children cleanup".
-type cleanupOptions struct {
+// childrenActionOptions holds the flags shared by the "children" subcommands
+// that walk a collection's children and apply a bulk operation to those
+// matching a given version (cleanup, deactivate).
+type childrenActionOptions struct {
 	collection      string
 	revision        string
 	includeInactive bool
@@ -39,7 +44,7 @@ type cleanupOptions struct {
 }
 
 func newChildrenCleanupCmd(flags *rootFlags) *cobra.Command {
-	opts := &cleanupOptions{includeInactive: true}
+	opts := &childrenActionOptions{includeInactive: true}
 
 	cmd := &cobra.Command{
 		Use:   "cleanup",
@@ -72,9 +77,92 @@ and deletes them once confirmed.`,
 	return cmd
 }
 
+func newChildrenDeactivateCmd(flags *rootFlags) *cobra.Command {
+	opts := &childrenActionOptions{includeInactive: true}
+
+	cmd := &cobra.Command{
+		Use:   "deactivate",
+		Short: "Deactivate all children of a collection project matching a given version",
+		Long: `Deactivate all children of a collection project matching a given version.
+
+Works just like "project children cleanup", except matched children are
+deactivated instead of deleted: walks every direct child of the chosen
+collection project, aggregates those whose version matches the one you
+specify, shows an overview for confirmation, and deactivates them once
+confirmed.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+			return runDeactivate(cmd.Context(), client, opts, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+
+	f := cmd.Flags()
+	f.StringVar(&opts.collection, "collection", "",
+		"Collection project name to work on (skips the interactive picker). "+
+			"Append '@<version>' to disambiguate collections that share a name.")
+	f.StringVar(&opts.revision, "version", "",
+		"Child project version/revision to deactivate (skips the prompt).")
+	f.BoolVar(&opts.includeInactive, "include-inactive", true,
+		"Whether inactive child projects are considered.")
+	f.BoolVar(&opts.yes, "yes", false, "Skip the confirmation prompt (non-interactive deactivation).")
+	f.BoolVar(&opts.dryRun, "dry-run", false, "Show what would be deactivated without deactivating anything.")
+
+	return cmd
+}
+
+// childrenAction describes the verb-specific parts of a "children" command
+// that walks matching children and applies a bulk operation to them.
+type childrenAction struct {
+	verb        string // present tense, used in prompts: "delete", "deactivate"
+	noun        string // used in the wrapped error: "deletion", "deactivation"
+	pastTense   string // lowercase past tense: "deleted", "deactivated"
+	confirmNote string // appended to the confirmation prompt, e.g. " This cannot be undone"
+	apply       func(ctx context.Context, client *api.Client, uuids []string) error
+}
+
+func deleteAction() childrenAction {
+	return childrenAction{
+		verb:        "delete",
+		noun:        "deletion",
+		pastTense:   "deleted",
+		confirmNote: " This cannot be undone",
+		apply: func(ctx context.Context, client *api.Client, uuids []string) error {
+			return client.BatchDelete(ctx, uuids)
+		},
+	}
+}
+
+func deactivateAction() childrenAction {
+	return childrenAction{
+		verb:      "deactivate",
+		noun:      "deactivation",
+		pastTense: "deactivated",
+		apply: func(ctx context.Context, client *api.Client, uuids []string) error {
+			return client.BatchDeactivate(ctx, uuids)
+		},
+	}
+}
+
 // runCleanup implements the cleanup flow. Input and output are injected so the
 // command is testable.
-func runCleanup(ctx context.Context, client *api.Client, opts *cleanupOptions, in io.Reader, out io.Writer) error {
+func runCleanup(ctx context.Context, client *api.Client, opts *childrenActionOptions, in io.Reader, out io.Writer) error {
+	return runChildrenAction(ctx, client, opts, in, out, deleteAction())
+}
+
+// runDeactivate implements the deactivate flow: identical to runCleanup
+// except matched children are deactivated rather than deleted.
+func runDeactivate(ctx context.Context, client *api.Client, opts *childrenActionOptions, in io.Reader, out io.Writer) error {
+	return runChildrenAction(ctx, client, opts, in, out, deactivateAction())
+}
+
+// runChildrenAction implements the shared walk/confirm/apply flow for the
+// "children" subcommands: pick a collection project, ask for the child
+// version to act on, aggregate the matching children, show an overview for
+// confirmation, and apply the action once confirmed.
+func runChildrenAction(ctx context.Context, client *api.Client, opts *childrenActionOptions, in io.Reader, out io.Writer, action childrenAction) error {
 	reader := bufio.NewReader(in)
 	excludeInactive := !opts.includeInactive
 
@@ -89,7 +177,7 @@ func runCleanup(ctx context.Context, client *api.Client, opts *cleanupOptions, i
 
 	var parent api.Project
 	if opts.collection != "" {
-		parent, err = matchNamedCollection(collections, opts.collection)
+		parent, err = matchNamedProject(collections, opts.collection)
 		if err != nil {
 			return err
 		}
@@ -101,10 +189,10 @@ func runCleanup(ctx context.Context, client *api.Client, opts *cleanupOptions, i
 	}
 	fmt.Fprintf(out, "\nWorking on collection project: %s\n\n", parent.Label())
 
-	// 2. Ask for the revision to delete, unless supplied.
+	// 2. Ask for the revision to act on, unless supplied.
 	revision := strings.TrimSpace(opts.revision)
 	if revision == "" {
-		fmt.Fprint(out, "Enter the child project version to delete: ")
+		fmt.Fprintf(out, "Enter the child project version to %s: ", action.verb)
 		line, rerr := reader.ReadString('\n')
 		if rerr != nil && line == "" {
 			return fmt.Errorf("reading version: %w", rerr)
@@ -135,29 +223,38 @@ func runCleanup(ctx context.Context, client *api.Client, opts *cleanupOptions, i
 	renderOverview(matches, revision, parent, out)
 
 	if opts.dryRun {
-		fmt.Fprintln(out, "Dry run: no projects were deleted.")
+		fmt.Fprintf(out, "Dry run: no projects were %s.\n", action.pastTense)
 		return nil
 	}
 
 	if !opts.yes {
-		fmt.Fprintf(out, "Delete these %d project(s)? This cannot be undone [y/N]: ", len(matches))
+		fmt.Fprintf(out, "%s these %d project(s)?%s [y/N]: ", capitalize(action.verb), len(matches), action.confirmNote)
 		line, _ := reader.ReadString('\n')
 		if !isYes(line) {
-			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
+			fmt.Fprintf(out, "Aborted. Nothing was %s.\n", action.pastTense)
 			return nil
 		}
 	}
 
-	// 5. Delete.
+	// 5. Apply.
 	uuids := make([]string, len(matches))
 	for i, m := range matches {
 		uuids[i] = m.UUID
 	}
-	if err := client.BatchDelete(ctx, uuids); err != nil {
-		return fmt.Errorf("deletion failed: %w", err)
+	if err := action.apply(ctx, client, uuids); err != nil {
+		return fmt.Errorf("%s failed: %w", action.noun, err)
 	}
-	fmt.Fprintf(out, "Deleted %d project(s).\n", len(matches))
+	fmt.Fprintf(out, "%s %d project(s).\n", capitalize(action.pastTense), len(matches))
 	return nil
+}
+
+// capitalize upper-cases the first byte of s. Only used for the short,
+// all-ASCII verbs in childrenAction, so a byte-wise upper-case is sufficient.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func pickCollectionProject(collections []api.Project, reader *bufio.Reader, out io.Writer) (api.Project, error) {
@@ -206,9 +303,9 @@ func renderOverview(matches []api.Project, version string, parent api.Project, o
 	fmt.Fprintln(out)
 }
 
-// matchNamedCollection resolves a --collection value to exactly one collection
-// project. The value may be "name" or "name@version".
-func matchNamedCollection(collections []api.Project, spec string) (api.Project, error) {
+// matchNamedProject resolves a "name" or "name@version" spec to exactly one
+// project out of candidates.
+func matchNamedProject(candidates []api.Project, spec string) (api.Project, error) {
 	name := spec
 	version := ""
 	if i := strings.Index(spec, "@"); i >= 0 {
@@ -216,25 +313,25 @@ func matchNamedCollection(collections []api.Project, spec string) (api.Project, 
 		version = spec[i+1:]
 	}
 
-	var candidates []api.Project
-	for _, c := range collections {
+	var matches []api.Project
+	for _, c := range candidates {
 		if c.Name != name {
 			continue
 		}
 		if version != "" && c.Version != version {
 			continue
 		}
-		candidates = append(candidates, c)
+		matches = append(matches, c)
 	}
 
-	switch len(candidates) {
+	switch len(matches) {
 	case 0:
-		return api.Project{}, fmt.Errorf("no collection project matches %q", spec)
+		return api.Project{}, fmt.Errorf("no project matches %q", spec)
 	case 1:
-		return candidates[0], nil
+		return matches[0], nil
 	default:
-		labels := make([]string, len(candidates))
-		for i, c := range candidates {
+		labels := make([]string, len(matches))
+		for i, c := range matches {
 			if c.Version != "" {
 				labels[i] = c.Name + "@" + c.Version
 			} else {
@@ -243,8 +340,30 @@ func matchNamedCollection(collections []api.Project, spec string) (api.Project, 
 		}
 		return api.Project{}, fmt.Errorf(
 			"%q is ambiguous (%d matches: %s); disambiguate with '<name>@<version>'",
-			spec, len(candidates), strings.Join(labels, ", "))
+			spec, len(matches), strings.Join(labels, ", "))
 	}
+}
+
+// resolveProjectBySpec looks up every version of the named project (the part
+// of spec before an optional "@version" suffix) and resolves it down to
+// exactly one, the same way matchNamedProject does for a prefetched list.
+func resolveProjectBySpec(ctx context.Context, client *api.Client, spec string) (api.Project, error) {
+	name := spec
+	if i := strings.Index(spec, "@"); i >= 0 {
+		name = spec[:i]
+	}
+	if name == "" {
+		return api.Project{}, fmt.Errorf("project name must not be empty")
+	}
+
+	candidates, err := client.ListProjectsByName(ctx, name, false)
+	if err != nil {
+		return api.Project{}, err
+	}
+	if len(candidates) == 0 {
+		return api.Project{}, fmt.Errorf("no project found with name %q", name)
+	}
+	return matchNamedProject(candidates, spec)
 }
 
 func isYes(line string) bool {

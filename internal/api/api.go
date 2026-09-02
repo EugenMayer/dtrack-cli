@@ -9,7 +9,14 @@
 //     count is returned in the X-Total-Count response header.
 //   - Collection ("collection project") parents are identified by a non-empty
 //     collectionLogic that is not "NONE".
+//   - GET /v1/project's "name" filter is an exact match (server-side it's
+//     built as "name == :name", not a LIKE/substring filter).
+//   - PUT /v1/project/clone processes the clone asynchronously and returns a
+//     tracking token immediately, not the finished project.
 //   - Bulk deletion is done through POST /v1/project/batchDelete.
+//   - A project's "active" flag is toggled via a partial update,
+//     PATCH /v1/project/{uuid}. There is no bulk endpoint for this, so
+//     deactivating multiple projects means one PATCH per project.
 package api
 
 import (
@@ -226,6 +233,20 @@ func (c *Client) ListProjects(ctx context.Context, excludeInactive, onlyRoot boo
 	return out, err
 }
 
+// ListProjectsByName returns every version of the project with the exact
+// given name, optionally excluding inactive ones. Dependency-Track's "name"
+// filter on GET /v1/project is an exact match, not a substring search.
+func (c *Client) ListProjectsByName(ctx context.Context, name string, excludeInactive bool) ([]Project, error) {
+	q := url.Values{}
+	q.Set("name", name)
+	if excludeInactive {
+		q.Set("excludeInactive", "true")
+	}
+	var out []Project
+	err := c.paginate(ctx, "v1/project", q, func(p Project) { out = append(out, p) })
+	return out, err
+}
+
 // ListCollectionProjects returns all projects that act as collection parents.
 func (c *Client) ListCollectionProjects(ctx context.Context, excludeInactive bool) ([]Project, error) {
 	all, err := c.ListProjects(ctx, excludeInactive, false)
@@ -289,4 +310,93 @@ func (c *Client) DeleteProject(ctx context.Context, uuid string) error {
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// DeactivateProject sets a single project's "active" flag to false via a
+// partial update (PATCH /v1/project/{uuid}). Dependency-Track merges only the
+// fields present in the body, so a bare {"active": false} payload is enough.
+func (c *Client) DeactivateProject(ctx context.Context, uuid string) error {
+	resp, err := c.do(ctx, http.MethodPatch, "v1/project/"+uuid, nil, map[string]bool{"active": false})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// BatchDeactivate deactivates multiple projects. Dependency-Track has no bulk
+// endpoint for toggling "active" (unlike batchDelete), so each project is
+// updated individually.
+func (c *Client) BatchDeactivate(ctx context.Context, uuids []string) error {
+	for _, u := range uuids {
+		if err := c.DeactivateProject(ctx, u); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CloneOptions selects which related data is copied when cloning a project.
+// Each field mirrors an "include*" flag accepted by PUT /v1/project/clone;
+// all default to false (an empty clone) unless set.
+type CloneOptions struct {
+	IncludeTags             bool
+	IncludeProperties       bool
+	IncludeDependencies     bool
+	IncludeComponents       bool
+	IncludeServices         bool
+	IncludeAuditHistory     bool
+	IncludeACL              bool
+	IncludePolicyViolations bool
+	MakeCloneLatest         bool
+}
+
+// cloneProjectRequest is the PUT /v1/project/clone payload.
+type cloneProjectRequest struct {
+	Project                 string `json:"project"`
+	Version                 string `json:"version"`
+	IncludeTags             bool   `json:"includeTags"`
+	IncludeProperties       bool   `json:"includeProperties"`
+	IncludeDependencies     bool   `json:"includeDependencies"`
+	IncludeComponents       bool   `json:"includeComponents"`
+	IncludeServices         bool   `json:"includeServices"`
+	IncludeAuditHistory     bool   `json:"includeAuditHistory"`
+	IncludeACL              bool   `json:"includeACL"`
+	IncludePolicyViolations bool   `json:"includePolicyViolations"`
+	MakeCloneLatest         bool   `json:"makeCloneLatest"`
+}
+
+// CloneProject clones sourceUUID into a new project at newVersion, copying
+// the related data selected by opts. Dependency-Track processes cloning
+// asynchronously (it dispatches a background event and returns immediately):
+// the returned token identifies that job, not the finished project, and
+// there is currently no polling helper for it in this client.
+func (c *Client) CloneProject(ctx context.Context, sourceUUID, newVersion string, opts CloneOptions) (string, error) {
+	req := cloneProjectRequest{
+		Project:                 sourceUUID,
+		Version:                 newVersion,
+		IncludeTags:             opts.IncludeTags,
+		IncludeProperties:       opts.IncludeProperties,
+		IncludeDependencies:     opts.IncludeDependencies,
+		IncludeComponents:       opts.IncludeComponents,
+		IncludeServices:         opts.IncludeServices,
+		IncludeAuditHistory:     opts.IncludeAuditHistory,
+		IncludeACL:              opts.IncludeACL,
+		IncludePolicyViolations: opts.IncludePolicyViolations,
+		MakeCloneLatest:         opts.MakeCloneLatest,
+	}
+
+	resp, err := c.do(ctx, http.MethodPut, "v1/project/clone", nil, req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var out struct {
+		Token string `json:"token"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return "", fmt.Errorf("decoding clone response: %w", derr)
+	}
+	return out.Token, nil
 }

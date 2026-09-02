@@ -66,8 +66,11 @@ chmod 600 ~/.dtrack/config.yaml
 ```
 
 If the file is missing, the CLI prints the path it looked for along with a
-template to create. The API key needs project **view** and **delete**
-permissions for the cleanup command.
+template to create. The API key needs project **view** permissions for the
+search command, project **view** and **delete** permissions for the cleanup
+command, project **view** and **edit** permissions for the deactivate
+command, and project **view** and **create** permissions for the clone
+command (cloning creates a new project version).
 
 TLS verification is the only connection setting kept on the command line: pass
 `--insecure` to disable certificate verification (not recommended).
@@ -118,6 +121,113 @@ Flags:
 Global flags: `--insecure` (connection URL and API key come from
 `~/.dtrack/config.yaml`, see [Configuration](#configuration)).
 
+### `project children deactivate`
+
+Works exactly like `project children cleanup`, except matching children are
+deactivated (their `active` flag is set to `false`) instead of deleted — a
+reversible alternative to cleanup for when you'd rather retire old versions
+than remove them outright.
+
+```bash
+dtrack project children deactivate
+```
+
+```bash
+dtrack project children deactivate \
+  --collection "Product A@prod" \
+  --version 1.2.3 \
+  --include-inactive=false \
+  --yes
+```
+
+Preview only, without deactivating:
+
+```bash
+dtrack project children deactivate --collection "Product A" --version 1.2.3 --dry-run
+```
+
+It takes the same `--collection`, `--version`, `--include-inactive`,
+`--dry-run`, and `--yes` flags as `cleanup` (see above), only applied to
+deactivation instead of deletion.
+
+### `project search`
+
+Looks up every version of a project by its exact name and prints them.
+
+```bash
+dtrack project search "Product A"
+```
+
+```
+2 project(s) found:
+
+  Product A   prod   d4e1f9d0-...
+  Product A   1.9.0  8b6a2f11-...  [inactive]
+```
+
+Narrow to one version, or exclude inactive projects:
+
+```bash
+dtrack project search "Product A" --version prod
+dtrack project search "Product A" --only-active
+```
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--version REV` | Restrict results to this exact version. |
+| `--only-active` | Only include active projects. |
+| `--json` | Print results as JSON instead of the table above. |
+| `--output-uuid` | Print only the matching project uuid(s), one per line, and nothing else — handy for piping into another command. Mutually exclusive with `--json`. |
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+
+### `project clone`
+
+Clones a project into a new version. `NAME` identifies the source project
+(append `@<version>` to disambiguate a name that has multiple versions);
+`NEW-VERSION` is the version assigned to the clone.
+
+```bash
+dtrack project clone "Product A@prod" 1.10.0
+```
+
+By default the clone carries **none** of the source project's tags,
+properties, dependencies, components, services, audit history, ACL, or
+policy violations over — opt in per-category with the `--include-*` flags:
+
+```bash
+dtrack project clone "Product A@prod" 1.10.0 \
+  --include-components --include-dependencies --include-properties \
+  --include-tags --include-acl --make-clone-latest
+```
+
+Cloning is processed **asynchronously** by the Dependency-Track server: this
+command reports the tracking token it returns immediately, not the finished
+project. Use the Dependency-Track UI, or poll the server directly, to know
+when the clone has finished.
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--include-tags` | Include tags in the clone. |
+| `--include-properties` | Include properties in the clone. |
+| `--include-dependencies` | Include dependencies (BOM) in the clone. |
+| `--include-components` | Include components in the clone. |
+| `--include-services` | Include services in the clone. |
+| `--include-audit-history` | Include audit history (findings analysis/suppressions) in the clone. |
+| `--include-acl` | Include the access control list in the clone. |
+| `--include-policy-violations` | Include policy violations in the clone. |
+| `--make-clone-latest` | Mark the cloned project as the latest version. |
+| `--json` | Print the result (token and resolved source project) as JSON. |
+| `--output-uuid` | Print only the clone's tracking token, and nothing else. Mutually exclusive with `--json`. |
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+
 ## Layout
 
 ```
@@ -136,6 +246,12 @@ This client targets the v5 REST API contract:
 - Collection parents are identified by a non-empty `collectionLogic`.
 - Bulk deletion uses `POST /v1/project/batchDelete`, with a per-project
   `DELETE` fallback.
+- Deactivation uses a per-project partial update, `PATCH /v1/project/{uuid}`
+  with `{"active": false}` — there is no bulk endpoint for toggling `active`.
+- `project search` filters `GET /v1/project` by `name`, which is an *exact*
+  match server-side, not a substring/fuzzy search.
+- `project clone` uses `PUT /v1/project/clone`, which only *starts* the clone
+  and returns a tracking token — there is no bulk or synchronous variant.
 - List endpoints are paginated (100/page); the client follows `X-Total-Count`.
 
 ## Testing
@@ -145,5 +261,7 @@ go test ./...
 ```
 
 The command tests spin up an in-process mock Dependency-Track server and
-exercise the full cleanup flow: interactive selection, dry-run, inactive
-filtering, the no-match path, and confirmation/abort.
+exercise the full cleanup, deactivate, search, and clone flows: interactive
+selection, dry-run, inactive filtering, the no-match path,
+confirmation/abort, source disambiguation, and `--json`/`--output-uuid`
+output.

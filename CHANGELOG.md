@@ -10,8 +10,24 @@ All notable changes to this project are documented here. The format is based on
 - `project children cleanup` command: interactively (or via flags) selects a
   collection project, aggregates its direct children matching a given version,
   shows an overview, and deletes them on confirmation.
-- Flags for the cleanup command: `--collection`, `--version`,
+- `project children deactivate` command: same flow as `cleanup`, but sets the
+  matched children's `active` flag to `false` instead of deleting them.
+- Flags for the cleanup and deactivate commands: `--collection`, `--version`,
   `--include-inactive`, `--dry-run`, `--yes`.
+- `project search <name>` command: looks up every version of a project by
+  exact name, with `--version` to narrow to one version and `--only-active`
+  to exclude inactive projects.
+- `project clone <name>[@source-version] <new-version>` command: clones a
+  project into a new version, with `--include-tags`, `--include-properties`,
+  `--include-dependencies`, `--include-components`, `--include-services`,
+  `--include-audit-history`, `--include-acl`, `--include-policy-violations`,
+  and `--make-clone-latest` flags mirroring Dependency-Track's clone options.
+  Cloning is asynchronous server-side, so the command reports the tracking
+  token Dependency-Track returns.
+- `--json` and `--output-uuid` flags on `project search` and `project clone`
+  for scripting: `--json` prints the full result as JSON, `--output-uuid`
+  prints only the relevant uuid(s)/token and nothing else. The two are
+  mutually exclusive.
 - Connection settings loaded from `~/.dtrack/config.yaml` (`url`, `api-key`).
 - `--insecure` global flag to disable TLS verification.
 - Test suite covering the cleanup flow and the config loader.
