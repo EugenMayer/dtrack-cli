@@ -14,15 +14,18 @@ import (
 )
 
 // rootFlags holds the persistent flags parsed on the root command. Connection
-// details (URL and API key) come from ~/.dtrack/config.yaml, not flags; only
-// TLS verification is exposed on the command line.
+// details (URL and API key) come from ~/.dtrack/config.yaml or the
+// DT_BASE_URL/DT_API_KEY environment variables, not flags; only TLS
+// verification is exposed on the command line.
 type rootFlags struct {
 	insecure bool
 }
 
-// newClient loads configuration from ~/.dtrack/config.yaml and constructs an
-// API client. It is called lazily by subcommands (RunE) so that --help and
-// flag parsing never require a config file or a reachable server.
+// newClient loads configuration from ~/.dtrack/config.yaml (and/or the
+// DT_BASE_URL/DT_API_KEY environment variables, see internal/config) and
+// constructs an API client. It is called lazily by subcommands (RunE) so
+// that --help and flag parsing never require a config file or a reachable
+// server.
 func (f *rootFlags) newClient() (*api.Client, error) {
 	cfg, err := config.Load(!f.insecure)
 	if err != nil {
@@ -53,7 +56,9 @@ func NewRootCmd(version string) *cobra.Command {
 		Long: "A command-line client for Dependency-Track 5.x.\n\n" +
 			"Connection settings are read from ~/.dtrack/config.yaml:\n\n" +
 			"    url: https://dtrack.example.com\n" +
-			"    api-key: odt_xxxxxxxx_...",
+			"    api-key: odt_xxxxxxxx_...\n\n" +
+			"Or set the DT_BASE_URL and DT_API_KEY environment variables instead " +
+			"(they take precedence over the file when set).",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
