@@ -92,6 +92,13 @@ permission for the bom upload command (plus **Portfolio Management** or
 TLS verification is the only connection setting kept on the command line: pass
 `--insecure` to disable certificate verification (not recommended).
 
+## Exit codes
+
+Every command exits `0` on success and `1` on any error — including an
+invalid or unauthorized API key, since Dependency-Track's `401`/`403`
+responses are surfaced like any other request failure. Check the printed
+`Error: ...` message (on stderr) for the reason.
+
 ## Commands
 
 ### `project children cleanup`
@@ -441,4 +448,6 @@ no-match path, confirmation/abort, `--json`/`--output-uuid` output, both
 delete, and bom upload), BOM upload auto-create, processing polling for
 both clone and BOM upload (including `--no-wait` and the poll timeout), and
 `--skip-if-inactive` (inactive/active/not-found, with and without
-`--auto-create`).
+`--auto-create`). The API client's tests separately confirm every request
+method surfaces HTTP 401/403 as an error, which is what guarantees exit
+code 1 on an auth failure for every command.

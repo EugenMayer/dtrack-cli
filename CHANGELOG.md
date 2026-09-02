@@ -54,6 +54,10 @@ All notable changes to this project are documented here. The format is based on
 - Connection settings loaded from `~/.dtrack/config.yaml` (`url`, `api-key`),
   optionally overridden (or supplied entirely, making the file unnecessary)
   via the `DT_BASE_URL` and `DT_API_KEY` environment variables.
+- Regression tests confirming every API client method surfaces HTTP 401/403
+  as an error, which is what guarantees every command exits with code `1`
+  on an authentication/authorization failure (an invalid or under-permissioned
+  API key).
 - `--insecure` global flag to disable TLS verification.
 - Test suite covering the cleanup flow and the config loader.
 - GitHub Actions CI workflow (gofmt, vet, race tests, build) and a release
