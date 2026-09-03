@@ -5,7 +5,11 @@
 
 A command-line client for [OWASP Dependency-Track](https://dependencytrack.org/)
 **5.x** (tested against 5.1), written in Go 1.27. Commands are organized as
-Cobra groups and subgroups so more can be added over time.
+Cobra groups and subgroups so more can be added over time. API access is
+built on the official
+[`DependencyTrack/client-go`](https://github.com/DependencyTrack/client-go)
+library, adapted to the small, simplified project shape this CLI needs (see
+`internal/api`).
 
 ## Requirements
 
@@ -27,16 +31,23 @@ go install github.com/eugenmayer/dtrack-cli/cmd/dtrack@latest
 ## Build
 
 ```bash
-go mod tidy   # completes go.sum from your module proxy (see note below)
 go build -o dtrack ./cmd/dtrack
 ```
 
-> **Note on `go.sum`:** this project was assembled in a sandbox without access
-> to `proxy.golang.org` / `gopkg.in`, so the committed `go.sum` covers only the
-> modules that were reachable there. Running `go mod tidy` once in a normal
-> environment fills in the remaining transitive hashes (all standard,
-> upstream-published modules — `cobra` and its deps). The build and full test
-> suite pass on Go 1.27.0.
+The committed `go.sum` is already complete for this — `go mod tidy` should not
+be necessary for a plain build/test.
+
+> **Note on `go.sum` and `go mod tidy`:** avoid running a bare `go mod tidy`
+> here. `DependencyTrack/client-go`'s own `go.mod` lists its *test-only*
+> dependencies (testcontainers-go, Docker, gRPC, protobuf, ...) as regular
+> `require` entries — Go's tooling doesn't distinguish test-only imports in
+> `go.mod` — so `go mod tidy` pulls full source checksums for that entire
+> graph into *our* `go.sum`, even though none of it is ever compiled into
+> this binary (`go build`/`go vet`/`go test` never need it — verified: they
+> succeed against the current, much smaller `go.sum` as-is). If you do need
+> to regenerate `go.sum` (e.g. after bumping a dependency), expect it to grow
+> by several dozen lines of otherwise-irrelevant checksums; that's expected
+> bookkeeping noise, not a sign something is wrong.
 
 Install into your `GOBIN`:
 
@@ -387,20 +398,29 @@ Global flags: `--insecure` (connection URL and API key come from
 
 ```
 cmd/dtrack/          main entry point
-internal/api/        Dependency-Track REST client (v5 contract)
+internal/api/        adapts DependencyTrack/client-go to this CLI's Project shape (v5 contract)
 internal/config/     loads ~/.dtrack/config.yaml (url + api-key)
 internal/commands/   Cobra command tree + tests
 ```
 
 ## Notes on v5
 
-This client targets the v5 REST API contract:
+This client targets the v5 REST API contract. Actual HTTP calls go through
+[`DependencyTrack/client-go`](https://github.com/DependencyTrack/client-go)
+(`internal/api` adapts it, rather than issuing requests directly), which
+shapes a few behaviors:
 
+- `api.New` (and so every command) makes one extra, unauthenticated
+  `GET /api/version` call up front — client-go's constructor does this
+  eagerly to learn the server version and validate connectivity, so
+  constructing a client can now fail on a network/server error, not only a
+  malformed URL or missing config.
 - Children are fetched via `GET /v1/project/{uuid}/children` (the inline
   `children` array was removed in v5).
 - Collection parents are identified by a non-empty `collectionLogic`.
-- Bulk deletion uses `POST /v1/project/batchDelete`, with a per-project
-  `DELETE` fallback.
+- Bulk deletion has no client-go wrapper, so `BatchDelete` issues one
+  `DELETE /v1/project/{uuid}` per project instead of a single
+  `POST /v1/project/batchDelete` call.
 - Deactivation uses a per-project partial update, `PATCH /v1/project/{uuid}`
   with `{"active": false}` — there is no bulk endpoint for toggling `active`.
   Dependency-Track responds `304 Not Modified` (not `200`) when the project
@@ -408,7 +428,10 @@ This client targets the v5 REST API contract:
   error, so deactivating an already-inactive child is a harmless no-op.
 - `project get` is a thin wrapper over `GET /v1/project/{uuid}`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
-  match server-side, not a substring/fuzzy search.
+  match server-side, not a substring/fuzzy search. Unlike the other list
+  endpoints, this one call isn't paginated on the client side, so a project
+  with more matching versions than a single page (100) would be truncated —
+  an accepted, unlikely-in-practice limitation.
 - `project delete` resolves `--project-name`/`--version` via
   `GET /v1/project/lookup` (an exact-match, single-result lookup) and
   `--by-uuid` via `GET /v1/project/{uuid}`, before deleting with
@@ -418,6 +441,11 @@ This client targets the v5 REST API contract:
   `--source-project-version`, `GET /v1/project/{uuid}` for `--by-uuid`),
   then clones it via `PUT /v1/project/clone`, which only *starts* the clone
   and returns a tracking token — there is no bulk or synchronous variant.
+  `--include-dependencies` has no distinct field on the wire: server-side, it
+  has only ever done one thing — force `includeComponents` on ("for backward
+  compatibility", per Dependency-Track's own source) — so it's sent as
+  `includeComponents = includeComponents || includeDependencies`, which is
+  exactly equivalent.
 - `project bom upload` uses `PUT /v1/bom`, which likewise only *starts* the
   upload and returns a tracking token.
 - Processing status for both clone and BOM upload tokens is polled via the

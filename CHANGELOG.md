@@ -66,6 +66,19 @@ All notable changes to this project are documented here. The format is based on
 - Build-time version injection via `-ldflags -X main.version`, surfaced through
   `dtrack --version`.
 
+### Changed
+
+- `internal/api` now issues every request through the official
+  [`DependencyTrack/client-go`](https://github.com/DependencyTrack/client-go)
+  library instead of hand-rolled HTTP, adapting it to the small `Project`
+  shape and method set this CLI needs. No command's flags or behavior
+  change as a result, with two internal side effects worth knowing about:
+  client construction now makes one extra, unauthenticated
+  `GET /api/version` call up front (so it can fail on a network/server
+  error, not just a malformed URL), and `BatchDelete` no longer calls
+  `POST /v1/project/batchDelete` — it always deletes one project per
+  request now, since client-go has no wrapper for the batch endpoint.
+
 ### Fixed
 
 - `project children deactivate` no longer errors when a matched child is

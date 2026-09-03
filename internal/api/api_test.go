@@ -2,15 +2,33 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
+
+	dtrack "github.com/DependencyTrack/client-go"
 )
+
+// uuidSample is a syntactically valid, otherwise-meaningless project uuid
+// used across this file's tests. dtrack.Project.UUID is a strictly-parsed
+// uuid.UUID, so any uuid.Parse-able string works regardless of whether a
+// real project exists behind it.
+const uuidSample = "12345678-1234-1234-1234-123456789abc"
+
+// writeVersion answers a GET /api/version request the way dtrack.NewClient
+// expects: it's fetched eagerly, unauthenticated, on every client
+// construction, so every mock server in this file needs to serve it.
+func writeVersion(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"version": "5.1.0"})
+}
 
 func TestDeactivateProject_AlreadyInactiveIsNotAnError(t *testing.T) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/version", writeVersion)
 	mux.HandleFunc("PATCH /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
 		// Dependency-Track returns 304 Not Modified when a PATCH wouldn't
 		// change anything, e.g. deactivating an already-inactive project.
@@ -19,22 +37,29 @@ func TestDeactivateProject_AlreadyInactiveIsNotAnError(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := New(srv.URL, "test-key")
-	if err := client.DeactivateProject(context.Background(), "already-inactive"); err != nil {
+	client, err := New(srv.URL, "test-key")
+	if err != nil {
+		t.Fatalf("building client: %v", err)
+	}
+	if err := client.DeactivateProject(context.Background(), uuidSample); err != nil {
 		t.Fatalf("expected a 304 response to be treated as success, got error: %v", err)
 	}
 }
 
 func TestDeactivateProject_OtherErrorsStillPropagate(t *testing.T) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/version", writeVersion)
 	mux.HandleFunc("PATCH /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	client := New(srv.URL, "test-key")
-	if err := client.DeactivateProject(context.Background(), "does-not-exist"); err == nil {
+	client, err := New(srv.URL, "test-key")
+	if err != nil {
+		t.Fatalf("building client: %v", err)
+	}
+	if err := client.DeactivateProject(context.Background(), uuidSample); err == nil {
 		t.Fatal("expected a 404 to still be reported as an error")
 	}
 }
@@ -48,22 +73,33 @@ func TestAuthFailuresPropagateAsErrors(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		t.Run(fmt.Sprintf("HTTP_%d", status), func(t *testing.T) {
 			mux := http.NewServeMux()
+			// /api/version must succeed unauthenticated (as it does against a
+			// real server) so client construction itself doesn't fail before
+			// any of the calls under test get a chance to run.
+			mux.HandleFunc("/api/version", writeVersion)
 			mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
 
-			client := New(srv.URL, "test-key")
+			client, err := New(srv.URL, "test-key")
+			if err != nil {
+				t.Fatalf("building client: %v", err)
+			}
 			ctx := context.Background()
 
 			calls := map[string]func() error{
 				"GetProject": func() error {
-					_, err := client.GetProject(ctx, "some-uuid")
+					_, err := client.GetProject(ctx, uuidSample)
 					return err
 				},
-				"ListProjects": func() error {
-					_, err := client.ListProjects(ctx, false, false)
+				"ListCollectionProjects": func() error {
+					_, err := client.ListCollectionProjects(ctx, false)
+					return err
+				},
+				"ListProjectsByName": func() error {
+					_, err := client.ListProjectsByName(ctx, "name", false)
 					return err
 				},
 				"LookupProject": func() error {
@@ -71,17 +107,17 @@ func TestAuthFailuresPropagateAsErrors(t *testing.T) {
 					return err
 				},
 				"DeleteProject": func() error {
-					return client.DeleteProject(ctx, "some-uuid")
+					return client.DeleteProject(ctx, uuidSample)
 				},
 				"DeactivateProject": func() error {
-					return client.DeactivateProject(ctx, "some-uuid")
+					return client.DeactivateProject(ctx, uuidSample)
 				},
 				"CloneProject": func() error {
-					_, err := client.CloneProject(ctx, "src-uuid", "2.0", CloneOptions{})
+					_, err := client.CloneProject(ctx, uuidSample, "2.0", CloneOptions{})
 					return err
 				},
 				"UploadBOM": func() error {
-					_, err := client.UploadBOM(ctx, "Zm9v", BOMUploadOptions{ProjectUUID: "some-uuid"})
+					_, err := client.UploadBOM(ctx, "Zm9v", BOMUploadOptions{ProjectUUID: uuidSample})
 					return err
 				},
 				"IsTokenProcessing": func() error {
@@ -96,8 +132,12 @@ func TestAuthFailuresPropagateAsErrors(t *testing.T) {
 					if err == nil {
 						t.Fatalf("expected an error for HTTP %d, got nil", status)
 					}
-					if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", status)) {
-						t.Errorf("expected the error to mention HTTP %d, got: %v", status, err)
+					var apiErr *dtrack.APIError
+					if !errors.As(err, &apiErr) {
+						t.Fatalf("expected a *dtrack.APIError, got %T: %v", err, err)
+					}
+					if apiErr.StatusCode != status {
+						t.Errorf("expected status %d, got %d", status, apiErr.StatusCode)
 					}
 				})
 			}

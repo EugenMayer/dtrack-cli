@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+// uuidBomProj is the uuid used across this file's --by-uuid/known-project
+// test fixtures. dtrack.Project.UUID and BOMUploadRequest.ProjectUUID are
+// strictly-parsed uuid.UUID values, so it must be a syntactically valid UUID.
+const uuidBomProj = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
 // bomCapture records the PUT /v1/bom request body a test makes, lets the
 // test override the returned token, and scripts a sequence of "processing"
 // values returned by successive GET /v1/event/token/{uuid} polls (the last
@@ -31,6 +36,10 @@ type bomCapture struct {
 func mockBomServer(t *testing.T, capture *bomCapture) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(proj{"version": "5.1.0"})
+	})
 	mux.HandleFunc("PUT /api/v1/bom", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -108,13 +117,13 @@ func TestBomUpload_ByUUID_WaitsForProcessing(t *testing.T) {
 
 	bomPath := writeTempBom(t, `{"bomFormat":"CycloneDX"}`)
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid"}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	opts := &bomUploadOptions{byUUID: uuidBomProj}
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capture.request["project"] != "proj-uuid" {
-		t.Errorf("expected project=proj-uuid in request, got %v", capture.request["project"])
+	if capture.request["project"] != uuidBomProj {
+		t.Errorf("expected project=%s in request, got %v", uuidBomProj, capture.request["project"])
 	}
 	gotBom, _ := capture.request["bom"].(string)
 	decoded, err := base64.StdEncoding.DecodeString(gotBom)
@@ -149,7 +158,7 @@ func TestBomUpload_ByNameAutoCreateWithParentAndIsLatest(t *testing.T) {
 		parentVersion: "1.0.0",
 		isLatest:      true,
 	}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -159,7 +168,12 @@ func TestBomUpload_ByNameAutoCreateWithParentAndIsLatest(t *testing.T) {
 		"autoCreate":     true,
 		"parentName":     "Parent",
 		"parentVersion":  "1.0.0",
-		"isLatest":       true,
+		// client-go's BOMUploadRequest.IsLatest serializes under
+		// "isLatestProjectVersion", not "isLatest" — both are accepted
+		// server-side (Dependency-Track's BomSubmitRequest declares
+		// "isLatest" as the canonical name with "isLatestProjectVersion" as
+		// a Jackson @JsonAlias), but a request only ever contains one.
+		"isLatestProjectVersion": true,
 	}
 	for field, want := range checks {
 		if got := capture.request[field]; got != want {
@@ -178,8 +192,8 @@ func TestBomUpload_NoWaitSkipsPolling(t *testing.T) {
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid", noWait: true}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	opts := &bomUploadOptions{byUUID: uuidBomProj, noWait: true}
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -201,7 +215,7 @@ func TestBomUpload_MissingIdentification(t *testing.T) {
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
 	opts := &bomUploadOptions{}
-	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "--by-uuid or --name") {
 		t.Fatalf("expected an identification error, got: %v", err)
 	}
@@ -213,8 +227,8 @@ func TestBomUpload_ByUUIDWithAutoCreateRejected(t *testing.T) {
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid", autoCreate: true}
-	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	opts := &bomUploadOptions{byUUID: uuidBomProj, autoCreate: true}
+	err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "--by-uuid") {
 		t.Fatalf("expected --auto-create with --by-uuid to be rejected, got: %v", err)
 	}
@@ -228,8 +242,8 @@ func TestBomUpload_TimesOutIfNeverFinishes(t *testing.T) {
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid"}
-	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	opts := &bomUploadOptions{byUUID: uuidBomProj}
+	err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected a timeout error, got: %v", err)
 	}
@@ -237,15 +251,15 @@ func TestBomUpload_TimesOutIfNeverFinishes(t *testing.T) {
 
 func TestBomUpload_SkipIfInactive_ByUUID(t *testing.T) {
 	capture := &bomCapture{
-		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": false},
+		knownProject: proj{"uuid": uuidBomProj, "name": "Product A", "version": "1.0.0", "active": false},
 	}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid", skipIfInactive: true}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	opts := &bomUploadOptions{byUUID: uuidBomProj, skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capture.request != nil {
@@ -258,7 +272,7 @@ func TestBomUpload_SkipIfInactive_ByUUID(t *testing.T) {
 
 func TestBomUpload_SkipIfInactive_ByNameVersion(t *testing.T) {
 	capture := &bomCapture{
-		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": false},
+		knownProject: proj{"uuid": uuidBomProj, "name": "Product A", "version": "1.0.0", "active": false},
 	}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()
@@ -266,7 +280,7 @@ func TestBomUpload_SkipIfInactive_ByNameVersion(t *testing.T) {
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
 	opts := &bomUploadOptions{name: "Product A", version: "1.0.0", skipIfInactive: true}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capture.request != nil {
@@ -280,15 +294,15 @@ func TestBomUpload_SkipIfInactive_ByNameVersion(t *testing.T) {
 func TestBomUpload_SkipIfInactive_ActiveProjectProceeds(t *testing.T) {
 	withFastPolling(t, time.Millisecond, time.Second)
 	capture := &bomCapture{
-		knownProject: proj{"uuid": "proj-uuid", "name": "Product A", "version": "1.0.0", "active": true},
+		knownProject: proj{"uuid": uuidBomProj, "name": "Product A", "version": "1.0.0", "active": true},
 	}
 	srv := mockBomServer(t, capture)
 	defer srv.Close()
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "proj-uuid", skipIfInactive: true}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	opts := &bomUploadOptions{byUUID: uuidBomProj, skipIfInactive: true}
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capture.request == nil {
@@ -308,7 +322,7 @@ func TestBomUpload_SkipIfInactive_AutoCreateNotFoundProceeds(t *testing.T) {
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
 	opts := &bomUploadOptions{name: "New Project", version: "1.0.0", autoCreate: true, skipIfInactive: true}
-	if err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out); err != nil {
+	if err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capture.request == nil {
@@ -324,7 +338,7 @@ func TestBomUpload_SkipIfInactive_NotFoundWithoutAutoCreateErrors(t *testing.T) 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
 	opts := &bomUploadOptions{name: "Does Not Exist", version: "1.0.0", skipIfInactive: true}
-	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out)
 	if err == nil {
 		t.Fatal("expected an error for a not-found project without --auto-create")
 	}
@@ -340,8 +354,8 @@ func TestBomUpload_SkipIfInactive_ByUUIDNotFoundErrors(t *testing.T) {
 
 	bomPath := writeTempBom(t, "{}")
 	var out strings.Builder
-	opts := &bomUploadOptions{byUUID: "does-not-exist", skipIfInactive: true}
-	err := runBomUpload(context.Background(), newTestClient(srv.URL), bomPath, opts, &out)
+	opts := &bomUploadOptions{byUUID: uuidUnknown, skipIfInactive: true}
+	err := runBomUpload(context.Background(), newTestClient(t, srv.URL), bomPath, opts, &out)
 	if err == nil {
 		t.Fatal("expected an error for a not-found project uuid")
 	}

@@ -25,7 +25,8 @@ type rootFlags struct {
 // DT_BASE_URL/DT_API_KEY environment variables, see internal/config) and
 // constructs an API client. It is called lazily by subcommands (RunE) so
 // that --help and flag parsing never require a config file or a reachable
-// server.
+// server — though api.New itself does contact the server once, to fetch its
+// version, so any actual command invocation now costs one extra round trip.
 func (f *rootFlags) newClient() (*api.Client, error) {
 	cfg, err := config.Load(!f.insecure)
 	if err != nil {
@@ -41,7 +42,7 @@ func (f *rootFlags) newClient() (*api.Client, error) {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // opt-in via --insecure
 		}
 	}
-	return api.New(cfg.URL, cfg.APIKey, api.WithHTTPClient(httpClient)), nil
+	return api.New(cfg.URL, cfg.APIKey, api.WithHTTPClient(httpClient))
 }
 
 // NewRootCmd builds the top-level "dtrack" command with its persistent flags

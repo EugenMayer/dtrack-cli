@@ -159,7 +159,7 @@ func shouldSkipInactiveProject(ctx context.Context, client *api.Client, byUUID, 
 		target, err = client.LookupProject(ctx, name, version)
 	}
 	if err != nil {
-		if byUUID == "" && autoCreate && strings.Contains(err.Error(), "HTTP 404") {
+		if byUUID == "" && autoCreate && api.IsNotFound(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("checking whether the project is inactive: %w", err)
