@@ -12,7 +12,7 @@ import (
 
 func TestClone_Basic(t *testing.T) {
 	capture := cloneCapture{
-		clonedProject: proj{"uuid": "cloned-1", "name": "search-me", "version": "3.0.0", "active": true},
+		clonedProject: proj{"uuid": uuidClonedProj, "name": "search-me", "version": "3.0.0", "active": true},
 	}
 	srv := mockServerWithClone(t, &capture)
 	defer srv.Close()
@@ -23,11 +23,11 @@ func TestClone_Basic(t *testing.T) {
 		sourceProjectVersion: "1.0.0",
 		clone:                api.CloneOptions{IncludeComponents: true, MakeCloneLatest: true},
 	}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if capture.request["project"] != "s1" {
+	if capture.request["project"] != uuidSearch1 {
 		t.Errorf("expected clone request for source uuid s1, got %v", capture.request["project"])
 	}
 	if capture.request["version"] != "3.0.0" {
@@ -45,24 +45,24 @@ func TestClone_Basic(t *testing.T) {
 	if !strings.Contains(out.String(), "Token: clone-token") {
 		t.Errorf("expected the tracking token in output:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "Clone completed: search-me 3.0.0 (uuid: cloned-1)") {
+	if !strings.Contains(out.String(), "Clone completed: search-me 3.0.0 (uuid: "+uuidClonedProj+")") {
 		t.Errorf("expected the resolved cloned project in output:\n%s", out.String())
 	}
 }
 
 func TestClone_ByUUID(t *testing.T) {
 	capture := cloneCapture{
-		clonedProject: proj{"uuid": "cloned-1", "name": "search-me", "version": "3.0.0", "active": true},
+		clonedProject: proj{"uuid": uuidClonedProj, "name": "search-me", "version": "3.0.0", "active": true},
 	}
 	srv := mockServerWithClone(t, &capture)
 	defer srv.Close()
 
 	var out strings.Builder
-	opts := &cloneRunOptions{byUUID: "s1"}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	opts := &cloneRunOptions{byUUID: uuidSearch1}
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capture.request["project"] != "s1" {
+	if capture.request["project"] != uuidSearch1 {
 		t.Errorf("expected clone request for source uuid s1, got %v", capture.request["project"])
 	}
 }
@@ -74,7 +74,7 @@ func TestClone_MissingIdentification(t *testing.T) {
 
 	var out strings.Builder
 	opts := &cloneRunOptions{}
-	err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out)
+	err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "--by-uuid or --source-project-name") {
 		t.Fatalf("expected an identification error, got: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestClone_SourceNameWithoutVersion(t *testing.T) {
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me"}
-	err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out)
+	err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "--source-project-version is required") {
 		t.Fatalf("expected a missing-version error, got: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestClone_UnknownSourceByName(t *testing.T) {
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "does-not-exist", sourceProjectVersion: "1.0.0"}
-	err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out)
+	err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out)
 	if err == nil {
 		t.Fatal("expected an error for an unknown source project")
 	}
@@ -116,8 +116,8 @@ func TestClone_UnknownSourceByUUID(t *testing.T) {
 	defer srv.Close()
 
 	var out strings.Builder
-	opts := &cloneRunOptions{byUUID: "does-not-exist"}
-	err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out)
+	opts := &cloneRunOptions{byUUID: uuidUnknown}
+	err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out)
 	if err == nil {
 		t.Fatal("expected an error for an unknown source uuid")
 	}
@@ -127,20 +127,20 @@ func TestClone_WaitsForProcessingThenResolvesProject(t *testing.T) {
 	withFastPolling(t, time.Millisecond, time.Second)
 	capture := cloneCapture{
 		processingSequence: []bool{true, true, false},
-		clonedProject:      proj{"uuid": "cloned-1", "name": "search-me", "version": "3.0.0", "active": true},
+		clonedProject:      proj{"uuid": uuidClonedProj, "name": "search-me", "version": "3.0.0", "active": true},
 	}
 	srv := mockServerWithClone(t, &capture)
 	defer srv.Close()
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me", sourceProjectVersion: "1.0.0"}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "Clone is still being processed...") {
 		t.Errorf("expected at least one processing update:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "Clone completed: search-me 3.0.0 (uuid: cloned-1)") {
+	if !strings.Contains(out.String(), "Clone completed: search-me 3.0.0 (uuid: "+uuidClonedProj+")") {
 		t.Errorf("expected the resolved cloned project in output:\n%s", out.String())
 	}
 }
@@ -152,7 +152,7 @@ func TestClone_NoWaitSkipsPollingAndResolution(t *testing.T) {
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me", sourceProjectVersion: "1.0.0", noWait: true}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if capture.pollCount != 0 {
@@ -174,7 +174,7 @@ func TestClone_TimesOutIfNeverFinishes(t *testing.T) {
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me", sourceProjectVersion: "1.0.0"}
-	err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out)
+	err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected a timeout error, got: %v", err)
 	}
@@ -182,17 +182,17 @@ func TestClone_TimesOutIfNeverFinishes(t *testing.T) {
 
 func TestClone_OutputUUID(t *testing.T) {
 	capture := cloneCapture{
-		clonedProject: proj{"uuid": "cloned-1", "name": "search-me", "version": "3.0.0", "active": true},
+		clonedProject: proj{"uuid": uuidClonedProj, "name": "search-me", "version": "3.0.0", "active": true},
 	}
 	srv := mockServerWithClone(t, &capture)
 	defer srv.Close()
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me", sourceProjectVersion: "1.0.0", outputUUID: true}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := strings.TrimSpace(out.String()); got != "cloned-1" {
+	if got := strings.TrimSpace(out.String()); got != uuidClonedProj {
 		t.Errorf("expected output-uuid to print only the cloned project's uuid, got %q", got)
 	}
 }
@@ -209,7 +209,7 @@ func TestClone_OutputUUID_NoWaitPrintsToken(t *testing.T) {
 		outputUUID:           true,
 		noWait:               true,
 	}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := strings.TrimSpace(out.String()); got != capture.token {
@@ -219,14 +219,14 @@ func TestClone_OutputUUID_NoWaitPrintsToken(t *testing.T) {
 
 func TestClone_JSON(t *testing.T) {
 	capture := cloneCapture{
-		clonedProject: proj{"uuid": "cloned-1", "name": "search-me", "version": "3.0.0", "active": true},
+		clonedProject: proj{"uuid": uuidClonedProj, "name": "search-me", "version": "3.0.0", "active": true},
 	}
 	srv := mockServerWithClone(t, &capture)
 	defer srv.Close()
 
 	var out strings.Builder
 	opts := &cloneRunOptions{sourceProjectName: "search-me", sourceProjectVersion: "1.0.0", jsonOutput: true}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -237,13 +237,13 @@ func TestClone_JSON(t *testing.T) {
 	if got.Token != "clone-token" {
 		t.Errorf("expected token clone-token, got %q", got.Token)
 	}
-	if got.SourceUUID != "s1" {
-		t.Errorf("expected source uuid s1, got %q", got.SourceUUID)
+	if got.SourceUUID != uuidSearch1 {
+		t.Errorf("expected source uuid %s, got %q", uuidSearch1, got.SourceUUID)
 	}
 	if got.NewVersion != "3.0.0" {
 		t.Errorf("expected new version 3.0.0, got %q", got.NewVersion)
 	}
-	if got.Project == nil || got.Project.UUID != "cloned-1" {
+	if got.Project == nil || got.Project.UUID != uuidClonedProj {
 		t.Errorf("expected the resolved cloned project in JSON output, got %+v", got.Project)
 	}
 }
@@ -260,7 +260,7 @@ func TestClone_JSON_NoWaitOmitsProject(t *testing.T) {
 		jsonOutput:           true,
 		noWait:               true,
 	}
-	if err := runClone(context.Background(), newTestClient(srv.URL), "3.0.0", opts, &out); err != nil {
+	if err := runClone(context.Background(), newTestClient(t, srv.URL), "3.0.0", opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

@@ -8,12 +8,12 @@ Helps to upload boms, cloning projects for CI/CD automation and remove child pro
 It is and toolkit to make dtrack scale in CD/CD automations and administration, for multiple microservices of a project with
 multiple versions (which can phase out via deacitivation)
 
+Built on the official [`DependencyTrack/client-go`](https://github.com/DependencyTrack/client-go) library, adapted to the small, simplified project shape this CLI needs (see `internal/api`).
+
 ## Install
 
-Download a prebuilt binary for your platform from the
-[latest release](https://github.com/eugenmayer/dtrack-cli/releases/latest),
-extract it, and put `dtrack` on your `PATH`. Each release ships binaries for
-Linux, macOS, and Windows (amd64/arm64) plus a `checksums.txt`.
+Download a prebuilt binary for your platform from the [latest release](https://github.com/eugenmayer/dtrack-cli/releases/latest),
+extract it, and put `dtrack` on your `PATH`. Each release ships binaries for Linux, macOS, and Windows (amd64/arm64) plus a `checksums.txt`.
 
 Or install from source with Go:
 
@@ -32,7 +32,6 @@ chmod +x ./dtrack
 ## Build
 
 ```bash
-go mod tidy   # completes go.sum from your module proxy (see note below)
 go build -o dtrack ./cmd/dtrack
 ```
 
@@ -385,20 +384,29 @@ Global flags: `--insecure` (connection URL and API key come from
 
 ```
 cmd/dtrack/          main entry point
-internal/api/        Dependency-Track REST client (v5 contract)
+internal/api/        adapts DependencyTrack/client-go to this CLI's Project shape (v5 contract)
 internal/config/     loads ~/.dtrack/config.yaml (url + api-key)
 internal/commands/   Cobra command tree + tests
 ```
 
 ## Notes on v5
 
-This client targets the v5 REST API contract:
+This client targets the v5 REST API contract. Actual HTTP calls go through
+[`DependencyTrack/client-go`](https://github.com/DependencyTrack/client-go)
+(`internal/api` adapts it, rather than issuing requests directly), which
+shapes a few behaviors:
 
+- `api.New` (and so every command) makes one extra, unauthenticated
+  `GET /api/version` call up front — client-go's constructor does this
+  eagerly to learn the server version and validate connectivity, so
+  constructing a client can now fail on a network/server error, not only a
+  malformed URL or missing config.
 - Children are fetched via `GET /v1/project/{uuid}/children` (the inline
   `children` array was removed in v5).
 - Collection parents are identified by a non-empty `collectionLogic`.
-- Bulk deletion uses `POST /v1/project/batchDelete`, with a per-project
-  `DELETE` fallback.
+- Bulk deletion has no client-go wrapper, so `BatchDelete` issues one
+  `DELETE /v1/project/{uuid}` per project instead of a single
+  `POST /v1/project/batchDelete` call.
 - Deactivation uses a per-project partial update, `PATCH /v1/project/{uuid}`
   with `{"active": false}` — there is no bulk endpoint for toggling `active`.
   Dependency-Track responds `304 Not Modified` (not `200`) when the project
@@ -406,7 +414,10 @@ This client targets the v5 REST API contract:
   error, so deactivating an already-inactive child is a harmless no-op.
 - `project get` is a thin wrapper over `GET /v1/project/{uuid}`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
-  match server-side, not a substring/fuzzy search.
+  match server-side, not a substring/fuzzy search. Unlike the other list
+  endpoints, this one call isn't paginated on the client side, so a project
+  with more matching versions than a single page (100) would be truncated —
+  an accepted, unlikely-in-practice limitation.
 - `project delete` resolves `--project-name`/`--version` via
   `GET /v1/project/lookup` (an exact-match, single-result lookup) and
   `--by-uuid` via `GET /v1/project/{uuid}`, before deleting with
@@ -416,6 +427,11 @@ This client targets the v5 REST API contract:
   `--source-project-version`, `GET /v1/project/{uuid}` for `--by-uuid`),
   then clones it via `PUT /v1/project/clone`, which only *starts* the clone
   and returns a tracking token — there is no bulk or synchronous variant.
+  `--include-dependencies` has no distinct field on the wire: server-side, it
+  has only ever done one thing — force `includeComponents` on ("for backward
+  compatibility", per Dependency-Track's own source) — so it's sent as
+  `includeComponents = includeComponents || includeDependencies`, which is
+  exactly equivalent.
 - `project bom upload` uses `PUT /v1/bom`, which likewise only *starts* the
   upload and returns a tracking token.
 - Processing status for both clone and BOM upload tokens is polled via the

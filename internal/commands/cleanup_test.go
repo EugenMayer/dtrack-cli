@@ -14,6 +14,23 @@ import (
 
 type proj map[string]any
 
+// Fixture UUIDs used across this file's mock server. dtrack.Project.UUID is
+// a strictly-parsed uuid.UUID, so every "uuid" field the mock returns (and
+// every uuid a test passes as a --by-uuid-style argument) must be a
+// syntactically valid UUID — a short mnemonic like "c1" will fail to decode.
+const (
+	uuidCollection1 = "11111111-1111-1111-1111-111111111111" // col-1: the "Product A" collection
+	uuidLeafX       = "22222222-2222-2222-2222-222222222222" // leaf-x: a non-collection, non-child project
+	uuidSearch1     = "33333333-3333-3333-3333-333333333333" // s1: search-me 1.0.0 (active)
+	uuidSearch2     = "44444444-4444-4444-4444-444444444444" // s2: search-me 2.0.0 (inactive)
+	uuidChild1      = "55555555-5555-5555-5555-555555555555" // c1: frontend 1.2.3 (active)
+	uuidChild2      = "66666666-6666-6666-6666-666666666666" // c2: backend 1.2.3 (active)
+	uuidChild3      = "77777777-7777-7777-7777-777777777777" // c3: frontend 1.2.4 (active)
+	uuidChild4      = "88888888-8888-8888-8888-888888888888" // c4: worker 1.2.3 (inactive)
+	uuidClonedProj  = "99999999-9999-9999-9999-999999999999" // cloned-1: result of a clone
+	uuidUnknown     = "ffffffff-ffff-ffff-ffff-ffffffffffff" // valid, but never a known project
+)
+
 // cloneCapture records the PUT /v1/project/clone request body a test makes,
 // lets the test override the "token" returned in the response, and scripts
 // how the async job that clone kicks off behaves:
@@ -51,18 +68,18 @@ func mockServerWithClone(t *testing.T, clone *cloneCapture) *httptest.Server {
 func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clone *cloneCapture) *httptest.Server {
 	t.Helper()
 	collections := []proj{
-		{"uuid": "col-1", "name": "Product A", "version": "prod", "collectionLogic": "AGGREGATE_DIRECT_CHILDREN", "active": true},
+		{"uuid": uuidCollection1, "name": "Product A", "version": "prod", "collectionLogic": "AGGREGATE_DIRECT_CHILDREN", "active": true},
 	}
-	nonCollection := proj{"uuid": "leaf-x", "name": "Standalone", "version": "1.0", "active": true}
+	nonCollection := proj{"uuid": uuidLeafX, "name": "Standalone", "version": "1.0", "active": true}
 	searchTargets := []proj{
-		{"uuid": "s1", "name": "search-me", "version": "1.0.0", "active": true},
-		{"uuid": "s2", "name": "search-me", "version": "2.0.0", "active": false},
+		{"uuid": uuidSearch1, "name": "search-me", "version": "1.0.0", "active": true},
+		{"uuid": uuidSearch2, "name": "search-me", "version": "2.0.0", "active": false},
 	}
 	children := []proj{
-		{"uuid": "c1", "name": "frontend", "version": "1.2.3", "active": true},
-		{"uuid": "c2", "name": "backend", "version": "1.2.3", "active": true},
-		{"uuid": "c3", "name": "frontend", "version": "1.2.4", "active": true},
-		{"uuid": "c4", "name": "worker", "version": "1.2.3", "active": false},
+		{"uuid": uuidChild1, "name": "frontend", "version": "1.2.3", "active": true},
+		{"uuid": uuidChild2, "name": "backend", "version": "1.2.3", "active": true},
+		{"uuid": uuidChild3, "name": "frontend", "version": "1.2.4", "active": true},
+		{"uuid": uuidChild4, "name": "worker", "version": "1.2.3", "active": false},
 	}
 
 	// allProjects is every project the mock server knows about: the fixed
@@ -99,11 +116,16 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		// dtrack.NewClient fetches this eagerly (unauthenticated) to learn
+		// the server version; the client-go About struct's other fields are
+		// left absent here, which decodes fine as their zero values.
 		writeJSON(w, 1, proj{"version": "5.1.0"})
 	})
 	mux.HandleFunc("/api/v1/project", func(w http.ResponseWriter, r *http.Request) {
 		// Mirrors the real server: "name" is an exact match, applied
-		// alongside excludeInactive.
+		// alongside excludeInactive. GetAll (used for the collection/search
+		// listing) sends neither, so this only actually filters requests
+		// coming from GetProjectsForName.
 		name := r.URL.Query().Get("name")
 		excl := r.URL.Query().Get("excludeInactive") == "true"
 
@@ -125,24 +147,22 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		}
 		writeJSON(w, len(filtered), items)
 	})
-	mux.HandleFunc("/api/v1/project/col-1/children", func(w http.ResponseWriter, r *http.Request) {
-		excl := r.URL.Query().Get("excludeInactive") == "true"
-		var data []proj
-		for _, c := range children {
-			if c["active"].(bool) || !excl {
-				data = append(data, c)
-			}
-		}
+	mux.HandleFunc("/api/v1/project/"+uuidCollection1+"/children", func(w http.ResponseWriter, r *http.Request) {
+		// client-go's GetChildren has no excludeInactive param, so the real
+		// client always fetches everything and filters client-side; this
+		// handler ignores the query param for the same reason.
 		items := []proj{}
 		if page(r) == 1 {
-			items = data
+			items = children
 		}
-		writeJSON(w, len(data), items)
+		writeJSON(w, len(children), items)
 	})
 	mux.HandleFunc("POST /api/v1/project/batchDelete", func(w http.ResponseWriter, r *http.Request) {
-		// Dependency-Track expects a bare JSON array of UUID strings, which it
-		// deserializes into a Set<UUID>. Rejecting an object here mirrors the
-		// real server's HTTP 400 and guards against regressing to a wrapper.
+		// No longer called by the client (client-go has no batchDelete
+		// wrapper; BatchDelete loops per-project deletes instead), but kept
+		// registered so a regression back to it would be caught by
+		// TestCleanup_Interactive asserting on *deleted instead of silently
+		// passing.
 		var uuids []string
 		if err := json.NewDecoder(r.Body).Decode(&uuids); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -151,13 +171,20 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 		*deleted = uuids
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("DELETE /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		*deleted = append(*deleted, r.PathValue("uuid"))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("PATCH /api/v1/project/{uuid}", func(w http.ResponseWriter, r *http.Request) {
 		// Partial update: Dependency-Track deserializes the body straight into
-		// a Project and merges only the fields present, so a bare
-		// {"active": false} payload is enough to deactivate. Mirrors the real
-		// server's "nothing changed" behavior: if the requested value matches
-		// the project's current state, respond 304 Not Modified instead of 200.
-		var body map[string]bool
+		// a Project and merges only the fields it cares about. client-go's
+		// Project struct lacks omitempty on a few fields (metrics,
+		// lastBomImport), so the body isn't just {"active": false} — decode
+		// as map[string]any and only look at "active", ignoring the rest, the
+		// same way the real server's patch handler does. Mirrors the real
+		// server's "nothing changed" behavior too: if the requested value
+		// matches the project's current state, respond 304 instead of 200.
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -166,7 +193,8 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 			*deactivated = append(*deactivated, r.PathValue("uuid"))
 		}
 		uuid := r.PathValue("uuid")
-		wantActive, hasActive := body["active"]
+		wantActiveRaw, hasActive := body["active"]
+		wantActive, _ := wantActiveRaw.(bool)
 		if hasActive && activeState[uuid] == wantActive {
 			w.WriteHeader(http.StatusNotModified)
 			return
@@ -226,8 +254,16 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 	return httptest.NewServer(mux)
 }
 
-func newTestClient(url string) *api.Client {
-	return api.New(url, "test-key")
+// newTestClient builds an api.Client against a mock server, failing the test
+// immediately if construction fails (e.g. the mock doesn't serve
+// GET /api/version, which dtrack.NewClient always fetches eagerly).
+func newTestClient(t *testing.T, url string) *api.Client {
+	t.Helper()
+	client, err := api.New(url, "test-key")
+	if err != nil {
+		t.Fatalf("building test client: %v", err)
+	}
+	return client
 }
 
 func TestCleanup_Interactive(t *testing.T) {
@@ -240,7 +276,7 @@ func TestCleanup_Interactive(t *testing.T) {
 	in := strings.NewReader("1\n1.2.3\ny\n")
 	opts := &childrenActionOptions{includeInactive: true}
 
-	if err := runCleanup(context.Background(), newTestClient(srv.URL), opts, in, &out); err != nil {
+	if err := runCleanup(context.Background(), newTestClient(t, srv.URL), opts, in, &out); err != nil {
 		t.Fatalf("runCleanup returned error: %v\noutput:\n%s", err, out.String())
 	}
 
@@ -249,12 +285,12 @@ func TestCleanup_Interactive(t *testing.T) {
 		got[u] = true
 	}
 	// Inactive worker (c4) is included by default; c1, c2, c4 match 1.2.3.
-	for _, want := range []string{"c1", "c2", "c4"} {
+	for _, want := range []string{uuidChild1, uuidChild2, uuidChild4} {
 		if !got[want] {
 			t.Errorf("expected %s to be deleted; got %v", want, deleted)
 		}
 	}
-	if got["c3"] {
+	if got[uuidChild3] {
 		t.Errorf("c3 (version 1.2.4) should not be deleted")
 	}
 	if len(deleted) != 3 {
@@ -274,7 +310,7 @@ func TestCleanup_DryRunExcludeInactiveNamed(t *testing.T) {
 		includeInactive: false,
 		dryRun:          true,
 	}
-	if err := runCleanup(context.Background(), newTestClient(srv.URL), opts, strings.NewReader(""), &out); err != nil {
+	if err := runCleanup(context.Background(), newTestClient(t, srv.URL), opts, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deleted != nil {
@@ -296,7 +332,7 @@ func TestCleanup_NoMatches(t *testing.T) {
 
 	var out strings.Builder
 	opts := &childrenActionOptions{collection: "Product A", revision: "9.9.9", yes: true, includeInactive: true}
-	if err := runCleanup(context.Background(), newTestClient(srv.URL), opts, strings.NewReader(""), &out); err != nil {
+	if err := runCleanup(context.Background(), newTestClient(t, srv.URL), opts, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deleted != nil {
@@ -315,7 +351,7 @@ func TestCleanup_AbortOnNo(t *testing.T) {
 	var out strings.Builder
 	opts := &childrenActionOptions{collection: "Product A", revision: "1.2.3", includeInactive: true}
 	// Answer "n" at the confirmation prompt.
-	if err := runCleanup(context.Background(), newTestClient(srv.URL), opts, strings.NewReader("n\n"), &out); err != nil {
+	if err := runCleanup(context.Background(), newTestClient(t, srv.URL), opts, strings.NewReader("n\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deleted != nil {
@@ -339,7 +375,7 @@ func TestDeactivate_Interactive(t *testing.T) {
 	// c4 (worker) is already inactive, so deactivating it is a no-op on the
 	// server: Dependency-Track responds 304 Not Modified rather than 200,
 	// which must not surface as an error.
-	if err := runDeactivate(context.Background(), newTestClient(srv.URL), opts, in, &out); err != nil {
+	if err := runDeactivate(context.Background(), newTestClient(t, srv.URL), opts, in, &out); err != nil {
 		t.Fatalf("runDeactivate returned error: %v\noutput:\n%s", err, out.String())
 	}
 	if !strings.Contains(out.String(), "Deactivated 3 project(s).") {
@@ -355,12 +391,12 @@ func TestDeactivate_Interactive(t *testing.T) {
 		got[u] = true
 	}
 	// Inactive worker (c4) is included by default; c1, c2, c4 match 1.2.3.
-	for _, want := range []string{"c1", "c2", "c4"} {
+	for _, want := range []string{uuidChild1, uuidChild2, uuidChild4} {
 		if !got[want] {
 			t.Errorf("expected %s to be deactivated; got %v", want, deactivated)
 		}
 	}
-	if got["c3"] {
+	if got[uuidChild3] {
 		t.Errorf("c3 (version 1.2.4) should not be deactivated")
 	}
 	if len(deactivated) != 3 {
@@ -383,7 +419,7 @@ func TestDeactivate_DryRun(t *testing.T) {
 		includeInactive: true,
 		dryRun:          true,
 	}
-	if err := runDeactivate(context.Background(), newTestClient(srv.URL), opts, strings.NewReader(""), &out); err != nil {
+	if err := runDeactivate(context.Background(), newTestClient(t, srv.URL), opts, strings.NewReader(""), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deactivated != nil {
@@ -402,7 +438,7 @@ func TestDeactivate_AbortOnNo(t *testing.T) {
 	var out strings.Builder
 	opts := &childrenActionOptions{collection: "Product A", revision: "1.2.3", includeInactive: true}
 	// Answer "n" at the confirmation prompt.
-	if err := runDeactivate(context.Background(), newTestClient(srv.URL), opts, strings.NewReader("n\n"), &out); err != nil {
+	if err := runDeactivate(context.Background(), newTestClient(t, srv.URL), opts, strings.NewReader("n\n"), &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deactivated != nil {
@@ -420,7 +456,7 @@ func TestSearch_AllVersions(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "search-me"}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "2 project(s) found") {
@@ -441,7 +477,7 @@ func TestSearch_OnlyActive(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "search-me", onlyActive: true}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "1 project(s) found") {
@@ -459,7 +495,7 @@ func TestSearch_VersionFilter(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "search-me", version: "2.0.0"}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "1 project(s) found") {
@@ -477,7 +513,7 @@ func TestSearch_NoMatches(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "does-not-exist"}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(out.String(), "No projects found") {
@@ -492,15 +528,15 @@ func TestSearch_JSON(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "search-me", version: "1.0.0", jsonOutput: true}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got []api.Project
 	if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
 		t.Fatalf("expected valid JSON output, got error %v:\n%s", err, out.String())
 	}
-	if len(got) != 1 || got[0].UUID != "s1" {
-		t.Errorf("expected a single project s1, got %+v", got)
+	if len(got) != 1 || got[0].UUID != uuidSearch1 {
+		t.Errorf("expected a single project %s, got %+v", uuidSearch1, got)
 	}
 }
 
@@ -511,11 +547,11 @@ func TestSearch_OutputUUID(t *testing.T) {
 
 	var out strings.Builder
 	opts := &searchOptions{name: "search-me", outputUUID: true}
-	if err := runSearch(context.Background(), newTestClient(srv.URL), opts, &out); err != nil {
+	if err := runSearch(context.Background(), newTestClient(t, srv.URL), opts, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := strings.Fields(out.String())
-	want := map[string]bool{"s1": true, "s2": true}
+	want := map[string]bool{uuidSearch1: true, uuidSearch2: true}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 uuids, got %v", got)
 	}
