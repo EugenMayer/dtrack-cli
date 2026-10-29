@@ -32,7 +32,7 @@ The project is identified either directly by --by-uuid, or by
 --by-uuid). This permanently deletes the project and everything under it
 (components, findings, children, ...); there is no undo.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}

@@ -23,6 +23,12 @@
 //   - A project's "active" flag is toggled via a partial update,
 //     PATCH /v1/project/{uuid}. There is no bulk endpoint for this, so
 //     deactivating multiple projects means one PATCH per project.
+//   - POST /v1/finding/project/{uuid}/analyze re-runs vulnerability analysis
+//     on a project's current BOM (no re-upload needed). It requires the
+//     VULNERABILITY_ANALYSIS permission (v4 required VIEW_VULNERABILITY) and
+//     responds 409 Conflict while an analysis of that project is already
+//     running. There is no bulk endpoint, so re-analyzing multiple projects
+//     means one call per project.
 //   - PUT /v1/bom processes the upload asynchronously and returns a tracking
 //     token immediately; GET /v1/event/token/{uuid} reports whether that
 //     token's job is still queued/running. Clone and BOM-upload tokens are
@@ -92,6 +98,11 @@ func parseUUID(s string) (uuid.UUID, error) {
 	}
 	return id, nil
 }
+
+// ErrAnalysisInProgress is returned by AnalyzeProject when the server
+// refuses to start an analysis because one is already running for the
+// project.
+var ErrAnalysisInProgress = errors.New("an analysis of this project is already in progress")
 
 // IsNotFound reports whether err represents an HTTP 404 response from the
 // server, e.g. from GetProject/LookupProject on an unknown project. It lets
@@ -429,10 +440,31 @@ func (c *Client) UploadBOM(ctx context.Context, bomBase64 string, opts BOMUpload
 	return string(token), nil
 }
 
+// AnalyzeProject triggers a re-analysis of a project's current BOM via
+// POST /v1/finding/project/{uuid}/analyze. Like a BOM upload, the analysis
+// runs asynchronously; the returned token can be polled with
+// IsTokenProcessing. If an analysis of the project is already running, the
+// server responds 409 Conflict and ErrAnalysisInProgress is returned.
+func (c *Client) AnalyzeProject(ctx context.Context, uuidStr string) (string, error) {
+	id, err := parseUUID(uuidStr)
+	if err != nil {
+		return "", err
+	}
+	token, err := c.dt.Finding.AnalyzeProject(ctx, id)
+	if err != nil {
+		var apiErr *dtrack.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+			return "", ErrAnalysisInProgress
+		}
+		return "", err
+	}
+	return string(token), nil
+}
+
 // IsTokenProcessing reports whether the background job identified by token
 // is still queued or running, via GET /v1/event/token/{uuid}. Dependency-
 // Track uses this same generic tracking token for every async job dispatched
-// through an event (BOM uploads, project clones, ...).
+// through an event (BOM uploads, project clones, analyses, ...).
 func (c *Client) IsTokenProcessing(ctx context.Context, token string) (bool, error) {
 	return c.dt.Event.IsBeingProcessed(ctx, dtrack.EventToken(token))
 }

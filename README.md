@@ -43,46 +43,70 @@ go install ./cmd/dtrack
 
 ## Configuration
 
-Connection settings are read from a YAML file in your home directory,
-`~/.dtrack/config.yaml`:
-
-```yaml
-url: https://dtrack.example.com
-api-key: odt_xxxxxxxx_...
-```
-
-Create it once:
+The server URL lives in a YAML file in your home directory,
+`~/.dtrack/config.yaml`; the API key is a secret and lives in your OS keyring
+(GNOME Keyring, KWallet or KeePassXC via the Secret Service on Linux, the
+Keychain on macOS, the Credential Manager on Windows).
 
 ```bash
-mkdir -p ~/.dtrack
-cat > ~/.dtrack/config.yaml <<'EOF'
-url: https://dtrack.example.com
-api-key: odt_xxxxxxxx_...
-EOF
-chmod 600 ~/.dtrack/config.yaml
+dtrack auth login      # asks for the server URL (if not configured yet), then for the API key
+dtrack auth status     # keyring backend, server URL, where the API key comes from (masked)
+dtrack auth logout     # removes the API key from the keyring
 ```
 
-Either setting can instead (or additionally) be supplied via environment
-variables, which take precedence over the file when set — handy for CI/CD
-or containers where a config file is inconvenient:
+`auth login` asks for the server URL only while none is configured (neither in
+`~/.dtrack/config.yaml` nor via `DT_BASE_URL`), and saves it to the config
+file. Anything else in that file, comments included, is kept. `--url` sets or
+replaces the URL without asking. Then you paste the API key, which is hidden
+as you type. It's created in Dependency-Track under *Administration → Access
+Management → Teams → (team) → API Keys*. To script it, pipe the key in with
+`--with-token` (pass `--url` too if no URL is configured yet, since stdin
+then holds the key):
+
+```bash
+pass show work/dtrack | dtrack auth login --url https://dtrack.example.com --with-token
+```
+
+The key is stored under service `dtrack.api-key`, account `dtrack`, so other
+tools can read it too (`secret-tool lookup service dtrack.api-key username dtrack`
+on Linux, `security find-generic-password -s dtrack.api-key -a dtrack -w` on
+macOS). Keyring handling comes from
+[`ghcli/pkg/keychain`](https://github.com/EugenMayer/ghcli/tree/main/pkg/keychain).
+
+The API key is taken from the first of these that has it:
+
+1. the `DT_API_KEY` environment variable
+2. a reference as the config file's `api-key`, for keys kept elsewhere:
+   - `api-key: cmd:pass show work/dtrack` (output of a command: pass, gopass, 1Password, sops, …)
+   - `api-key: env:MY_DT_KEY` (another environment variable)
+   - `api-key: keychain:prod.api-key` (a different keyring path, e.g. one per server)
+3. the OS keyring, path `api-key`
+
+A plain-text API key in the config file (`api-key: odt_...`, including
+`literal:odt_...`) is **not supported**: dtrack refuses to run while one is
+there, even if `DT_API_KEY` or the keyring would supply the key. To migrate,
+delete the `api-key` line from `~/.dtrack/config.yaml` and run
+`dtrack auth login` to paste the key into the keyring.
+
+No keyring available (SSH sessions, servers, WSL, CI)? dtrack notices that
+right away instead of hanging, and falls through to the other sources. In
+CI/CD or containers, use environment variables, which take precedence over
+the file and need neither it nor a keyring:
 
 ```bash
 export DT_BASE_URL=https://dtrack.example.com
 export DT_API_KEY=odt_xxxxxxxx_...
 ```
 
-The config file becomes entirely optional once both `DT_BASE_URL` and
-`DT_API_KEY` are set; either one alone just overrides that single field from
-the file.
-
 If neither the file nor the environment variables supply a setting, the CLI
-prints the path it looked for along with a template to create (or the
-environment variable names as an alternative). The API key needs project
+prints the path it looked for along with what to put there and how to store
+the API key (or the environment variable names as an alternative). The API key needs project
 **view** permissions for the
 get and search commands, project **view** and **delete** permissions for the
 cleanup and delete commands, project **view** and **edit** permissions for the
 deactivate command, project **view** and **create** permissions for the
-clone command (cloning creates a new project version), and **BOM Upload**
+clone command (cloning creates a new project version), the permissions listed
+under [`project children rescan`](#project-children-rescan) for that command, and **BOM Upload**
 permission for the bom upload command (plus **Portfolio Management** or
 **Project Creation & Upload** if using `--auto-create`).
 
@@ -113,7 +137,7 @@ version to delete. Matching children are aggregated and shown as an overview;
 nothing is deleted until you confirm.
 
 Non-interactive / scripted (connection details come from
-`~/.dtrack/config.yaml`):
+`~/.dtrack/config.yaml` and the OS keyring):
 
 ```bash
 dtrack project children cleanup \
@@ -140,7 +164,7 @@ Flags:
 | `--yes` | Skip the confirmation prompt. |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ### `project children deactivate`
 
@@ -171,6 +195,63 @@ It takes the same `--collection`, `--version`, `--include-inactive`,
 `--dry-run`, and `--yes` flags as `cleanup` (see above), only applied to
 deactivation instead of deletion.
 
+### `project children rescan`
+
+Re-runs vulnerability analysis on the *current* BOM of every child of a
+collection project — no re-upload needed. Handy after a vulnerability
+database update or policy change, when you want fresh findings across all
+services of a product right away.
+
+```bash
+dtrack project children rescan
+```
+
+You'll be asked which collection project to work on; unlike `cleanup` and
+`deactivate`, there is no version prompt — every child is selected. The
+overview is shown for confirmation, then an analysis is triggered for each
+child and the command waits until all of them have completed.
+
+```bash
+dtrack project children rescan --collection "Product A@prod" --yes
+```
+
+Only rescan children of one version, and don't wait for completion:
+
+```bash
+dtrack project children rescan --collection "Product A" --version 1.2.3 --yes --no-wait
+```
+
+Flags:
+
+| Flag | Description |
+| --- | --- |
+| `--collection NAME[@VERSION]` | Skip the picker; select a collection by name (append `@version` to disambiguate). |
+| `--version REV` | Only rescan children with this version (default: all children). |
+| `--include-inactive` | Whether inactive children are considered (default `false`, unlike `cleanup`/`deactivate`). |
+| `--dry-run` | Show what would be rescanned, trigger nothing. |
+| `--yes` | Skip the confirmation prompt. |
+| `--no-wait` | Trigger the analyses and return immediately instead of waiting for them to finish. |
+
+If an analysis of a child is already running, Dependency-Track refuses to
+start another one (`409 Conflict`). dtrack reports that child as already in
+progress, doesn't wait for it, and carries on with the rest.
+
+Required permissions (Dependency-Track 5.x):
+
+| Permission | Needed for |
+| --- | --- |
+| `VIEW_PORTFOLIO` | Listing collection projects and their children. |
+| `VULNERABILITY_ANALYSIS` | Triggering the analysis (`POST /v1/finding/project/{uuid}/analyze`). |
+
+With portfolio access control enabled, the API key's team also needs access
+to every child being rescanned. Otherwise that child fails with `403` and the
+rescan stops there. Polling for completion (`GET /v1/event/token/{uuid}`) needs
+no extra permission. Dependency-Track 4.x protected the analyze endpoint with
+`VIEW_VULNERABILITY` instead.
+
+Global flags: `--insecure` (connection URL and API key come from
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
+
 ### `project get`
 
 Fetches a single project by UUID and prints its details.
@@ -195,7 +276,7 @@ Flags:
 | `--output-uuid` | Print only the project's uuid, and nothing else (mostly useful as a "does this uuid exist" check). Mutually exclusive with `--json`. |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ### `project search`
 
@@ -229,7 +310,7 @@ Flags:
 | `--output-uuid` | Print only the matching project uuid(s), one per line, and nothing else — handy for piping into another command. Mutually exclusive with `--json`. |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ### `project clone`
 
@@ -290,7 +371,7 @@ Flags:
 | `--output-uuid` | Print only the cloned project's uuid (or, with `--no-wait`, the tracking token), and nothing else. Mutually exclusive with `--json`. |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ### `project delete`
 
@@ -320,7 +401,7 @@ Flags:
 | `--yes` | Skip the confirmation prompt (non-interactive deletion). |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ### `project bom upload`
 
@@ -378,14 +459,14 @@ Flags:
 | `--no-wait` | Report the tracking token and return immediately, without waiting for processing to finish. |
 
 Global flags: `--insecure` (connection URL and API key come from
-`~/.dtrack/config.yaml`, see [Configuration](#configuration)).
+`~/.dtrack/config.yaml` and the OS keyring, see [Configuration](#configuration)).
 
 ## Layout
 
 ```
 cmd/dtrack/          main entry point
 internal/api/        adapts DependencyTrack/client-go to this CLI's Project shape (v5 contract)
-internal/config/     loads ~/.dtrack/config.yaml (url + api-key)
+internal/config/     loads ~/.dtrack/config.yaml (url) and resolves the api-key (env, keyring, …)
 internal/commands/   Cobra command tree + tests
 ```
 
@@ -412,6 +493,9 @@ shapes a few behaviors:
   Dependency-Track responds `304 Not Modified` (not `200`) when the project
   is already inactive; the client treats that as success rather than an
   error, so deactivating an already-inactive child is a harmless no-op.
+- Rescanning uses `POST /v1/finding/project/{uuid}/analyze`, one call per
+  child (there is no bulk endpoint). Each returns a tracking token that is
+  polled via `GET /v1/event/token/{uuid}`, like BOM uploads and clones.
 - `project get` is a thin wrapper over `GET /v1/project/{uuid}`.
 - `project search` filters `GET /v1/project` by `name`, which is an *exact*
   match server-side, not a substring/fuzzy search. Unlike the other list

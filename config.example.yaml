@@ -2,7 +2,17 @@
 #
 #   mkdir -p ~/.dtrack
 #   cp config.example.yaml ~/.dtrack/config.yaml
-#   chmod 600 ~/.dtrack/config.yaml
+#
+# The API key does not belong in this file: store it in your OS keyring with
+#
+#   dtrack auth login
+#
+# or set the DT_API_KEY environment variable (e.g. in CI).
 
 url: https://dtrack.example.com
-api-key: odt_xxxxxxxx_replace_me
+
+# Optional: read the API key from somewhere else instead of the OS keyring.
+# A plain-text key here is rejected; only these references are accepted.
+# api-key: cmd:pass show work/dtrack     # output of a command
+# api-key: env:MY_DT_KEY                 # another environment variable
+# api-key: keychain:prod.api-key         # a different OS keyring path

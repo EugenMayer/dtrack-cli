@@ -33,7 +33,7 @@ inactive projects.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.name = args[0]
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}

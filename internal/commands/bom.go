@@ -59,7 +59,7 @@ the tracking token and, unless --no-wait is given, polls until processing
 completes.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}

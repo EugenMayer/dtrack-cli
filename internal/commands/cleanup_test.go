@@ -48,24 +48,37 @@ type cloneCapture struct {
 }
 
 func mockServer(t *testing.T, deleted *[]string) *httptest.Server {
-	return mockServerFull(t, deleted, nil, nil)
+	return mockServerFull(t, deleted, nil, nil, nil)
 }
 
 // mockServerWithDeactivate is mockServer plus a PATCH handler that records
 // every uuid deactivated (in call order, duplicates included) into
 // *deactivated. Pass a nil deactivated to skip that behaviour.
 func mockServerWithDeactivate(t *testing.T, deleted *[]string, deactivated *[]string) *httptest.Server {
-	return mockServerFull(t, deleted, deactivated, nil)
+	return mockServerFull(t, deleted, deactivated, nil, nil)
 }
 
 // mockServerWithClone is mockServer plus a PUT /clone handler that records
 // the request into clone and returns clone.token (or "clone-token" if unset).
 func mockServerWithClone(t *testing.T, clone *cloneCapture) *httptest.Server {
 	var deleted []string
-	return mockServerFull(t, &deleted, nil, clone)
+	return mockServerFull(t, &deleted, nil, clone, nil)
 }
 
-func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clone *cloneCapture) *httptest.Server {
+// mockServerWithAnalyze is mockServer plus a POST /finding/project/{uuid}/analyze
+// handler that records every uuid analyzed (in call order) into *analyzed.
+// tokens scripts the event-token polling the same way it does for clone
+// (pass nil for "done immediately").
+func mockServerWithAnalyze(t *testing.T, analyzed *[]string, tokens *cloneCapture) *httptest.Server {
+	var deleted []string
+	return mockServerFull(t, &deleted, nil, tokens, analyzed)
+}
+
+// analysisRunningUUID, when set by a test, is the project whose analyze
+// call the mock server rejects with 409 Conflict.
+var analysisRunningUUID string
+
+func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clone *cloneCapture, analyzed *[]string) *httptest.Server {
 	t.Helper()
 	collections := []proj{
 		{"uuid": uuidCollection1, "name": "Product A", "version": "prod", "collectionLogic": "AGGREGATE_DIRECT_CHILDREN", "active": true},
@@ -216,6 +229,17 @@ func mockServerFull(t *testing.T, deleted *[]string, deactivated *[]string, clon
 			}
 		}
 		writeJSON(w, 1, proj{"token": token})
+	})
+	mux.HandleFunc("POST /api/v1/finding/project/{uuid}/analyze", func(w http.ResponseWriter, r *http.Request) {
+		if analyzed != nil {
+			*analyzed = append(*analyzed, r.PathValue("uuid"))
+		}
+		// Mirrors v5: a second analysis while one is running is refused.
+		if r.PathValue("uuid") == analysisRunningUUID {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		writeJSON(w, 1, proj{"token": "analyze-" + r.PathValue("uuid")})
 	})
 	mux.HandleFunc("GET /api/v1/event/token/{uuid}", func(w http.ResponseWriter, r *http.Request) {
 		processing := false

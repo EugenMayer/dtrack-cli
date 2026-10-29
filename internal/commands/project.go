@@ -3,6 +3,7 @@ package commands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -26,6 +27,7 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 
 	childrenCmd.AddCommand(newChildrenCleanupCmd(flags))
 	childrenCmd.AddCommand(newChildrenDeactivateCmd(flags))
+	childrenCmd.AddCommand(newChildrenRescanCmd(flags))
 	projectCmd.AddCommand(childrenCmd)
 	projectCmd.AddCommand(newProjectGetCmd(flags))
 	projectCmd.AddCommand(newProjectSearchCmd(flags))
@@ -37,13 +39,14 @@ func newProjectCmd(flags *rootFlags) *cobra.Command {
 
 // childrenActionOptions holds the flags shared by the "children" subcommands
 // that walk a collection's children and apply a bulk operation to those
-// matching a given version (cleanup, deactivate).
+// matching a given version (cleanup, deactivate, rescan).
 type childrenActionOptions struct {
 	collection      string
 	revision        string
 	includeInactive bool
 	yes             bool
 	dryRun          bool
+	noWait          bool // rescan only
 }
 
 func newChildrenCleanupCmd(flags *rootFlags) *cobra.Command {
@@ -58,7 +61,7 @@ Walks every direct child of the chosen collection project, aggregates those
 whose version matches the one you specify, shows an overview for confirmation,
 and deletes them once confirmed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -94,7 +97,7 @@ collection project, aggregates those whose version matches the one you
 specify, shows an overview for confirmation, and deactivates them once
 confirmed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -116,6 +119,48 @@ confirmed.`,
 	return cmd
 }
 
+func newChildrenRescanCmd(flags *rootFlags) *cobra.Command {
+	opts := &childrenActionOptions{}
+
+	cmd := &cobra.Command{
+		Use:   "rescan",
+		Short: "Re-analyze the current BOM of all children of a collection project",
+		Long: `Re-analyze the current BOM of all children of a collection project.
+
+Walks every direct child of the chosen collection project, shows an overview
+for confirmation, and triggers a vulnerability re-analysis of each child's
+current BOM (no re-upload needed) once confirmed. Pass --version to only
+rescan children of that version.
+
+Inactive children are skipped unless --include-inactive is given.
+
+Dependency-Track runs each analysis asynchronously: unless --no-wait is
+given, this command polls until every triggered analysis has completed.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			client, err := flags.newClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return runRescan(cmd.Context(), client, opts, cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+
+	f := cmd.Flags()
+	f.StringVar(&opts.collection, "collection", "",
+		"Collection project name to work on (skips the interactive picker). "+
+			"Append '@<version>' to disambiguate collections that share a name.")
+	f.StringVar(&opts.revision, "version", "",
+		"Only rescan children with this version/revision (default: all children).")
+	f.BoolVar(&opts.includeInactive, "include-inactive", false,
+		"Whether inactive child projects are considered.")
+	f.BoolVar(&opts.yes, "yes", false, "Skip the confirmation prompt (non-interactive rescan).")
+	f.BoolVar(&opts.dryRun, "dry-run", false, "Show what would be rescanned without triggering anything.")
+	f.BoolVar(&opts.noWait, "no-wait", false,
+		"Trigger the analyses and return immediately, without waiting for them to finish.")
+
+	return cmd
+}
+
 // childrenAction describes the verb-specific parts of a "children" command
 // that walks matching children and applies a bulk operation to them.
 type childrenAction struct {
@@ -123,7 +168,22 @@ type childrenAction struct {
 	noun        string // used in the wrapped error: "deletion", "deactivation"
 	pastTense   string // lowercase past tense: "deleted", "deactivated"
 	confirmNote string // appended to the confirmation prompt, e.g. " This cannot be undone"
-	apply       func(ctx context.Context, client *api.Client, uuids []string) error
+	// versionOptional skips the version prompt; an empty version then
+	// matches every child instead of being an error.
+	versionOptional bool
+	apply           func(ctx context.Context, client *api.Client, projects []api.Project, out io.Writer) error
+	// summary, if set, overrides the default "<PastTense> N project(s)."
+	// line printed once apply succeeds.
+	summary func(n int) string
+}
+
+// projectUUIDs returns the uuids of projects, in order.
+func projectUUIDs(projects []api.Project) []string {
+	uuids := make([]string, len(projects))
+	for i, p := range projects {
+		uuids[i] = p.UUID
+	}
+	return uuids
 }
 
 func deleteAction() childrenAction {
@@ -132,8 +192,8 @@ func deleteAction() childrenAction {
 		noun:        "deletion",
 		pastTense:   "deleted",
 		confirmNote: " This cannot be undone",
-		apply: func(ctx context.Context, client *api.Client, uuids []string) error {
-			return client.BatchDelete(ctx, uuids)
+		apply: func(ctx context.Context, client *api.Client, projects []api.Project, _ io.Writer) error {
+			return client.BatchDelete(ctx, projectUUIDs(projects))
 		},
 	}
 }
@@ -143,8 +203,58 @@ func deactivateAction() childrenAction {
 		verb:      "deactivate",
 		noun:      "deactivation",
 		pastTense: "deactivated",
-		apply: func(ctx context.Context, client *api.Client, uuids []string) error {
-			return client.BatchDeactivate(ctx, uuids)
+		apply: func(ctx context.Context, client *api.Client, projects []api.Project, _ io.Writer) error {
+			return client.BatchDeactivate(ctx, projectUUIDs(projects))
+		},
+	}
+}
+
+// rescanAction triggers a re-analysis of each project's current BOM and,
+// unless noWait, waits for every analysis to finish. All analyses are
+// triggered up front so the server can work on them concurrently.
+func rescanAction(noWait bool) childrenAction {
+	return childrenAction{
+		verb:            "rescan",
+		noun:            "rescan",
+		pastTense:       "rescanned",
+		versionOptional: true,
+		apply: func(ctx context.Context, client *api.Client, projects []api.Project, out io.Writer) error {
+			// An empty token marks a project whose analysis was already
+			// running: the server refuses a second one, and there is nothing
+			// of ours to wait for.
+			tokens := make([]string, len(projects))
+			for i, p := range projects {
+				token, err := client.AnalyzeProject(ctx, p.UUID)
+				if errors.Is(err, api.ErrAnalysisInProgress) {
+					fmt.Fprintf(out, "Analysis of %s is already in progress; not triggering another one.\n", p.Label())
+					continue
+				}
+				if err != nil {
+					return fmt.Errorf("triggering analysis of %s (uuid: %s): %w", p.Label(), p.UUID, err)
+				}
+				tokens[i] = token
+				fmt.Fprintf(out, "Triggered analysis of %s. Token: %s\n", p.Label(), token)
+			}
+			if noWait {
+				return nil
+			}
+			for i, p := range projects {
+				if tokens[i] == "" {
+					continue
+				}
+				msg := fmt.Sprintf("Analysis of %s is still running...", p.Label())
+				if err := waitForTokenProcessing(ctx, client, tokens[i], msg, out); err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "Analysis of %s completed.\n", p.Label())
+			}
+			return nil
+		},
+		summary: func(n int) string {
+			if noWait {
+				return fmt.Sprintf("Triggered analysis of %d project(s); not waiting for completion.", n)
+			}
+			return fmt.Sprintf("Rescanned %d project(s).", n)
 		},
 	}
 }
@@ -159,6 +269,13 @@ func runCleanup(ctx context.Context, client *api.Client, opts *childrenActionOpt
 // except matched children are deactivated rather than deleted.
 func runDeactivate(ctx context.Context, client *api.Client, opts *childrenActionOptions, in io.Reader, out io.Writer) error {
 	return runChildrenAction(ctx, client, opts, in, out, deactivateAction())
+}
+
+// runRescan implements the rescan flow: like runCleanup, except the version
+// is optional (all children by default) and matched children have their
+// current BOM re-analyzed rather than being deleted.
+func runRescan(ctx context.Context, client *api.Client, opts *childrenActionOptions, in io.Reader, out io.Writer) error {
+	return runChildrenAction(ctx, client, opts, in, out, rescanAction(opts.noWait))
 }
 
 // runChildrenAction implements the shared walk/confirm/apply flow for the
@@ -192,9 +309,9 @@ func runChildrenAction(ctx context.Context, client *api.Client, opts *childrenAc
 	}
 	fmt.Fprintf(out, "\nWorking on collection project: %s\n\n", parent.Label())
 
-	// 2. Ask for the revision to act on, unless supplied.
+	// 2. Ask for the revision to act on, unless supplied or optional.
 	revision := strings.TrimSpace(opts.revision)
-	if revision == "" {
+	if revision == "" && !action.versionOptional {
 		fmt.Fprintf(out, "Enter the child project version to %s: ", action.verb)
 		line, rerr := reader.ReadString('\n')
 		if rerr != nil && line == "" {
@@ -202,7 +319,7 @@ func runChildrenAction(ctx context.Context, client *api.Client, opts *childrenAc
 		}
 		revision = strings.TrimSpace(line)
 	}
-	if revision == "" {
+	if revision == "" && !action.versionOptional {
 		return fmt.Errorf("version must not be empty")
 	}
 
@@ -213,12 +330,16 @@ func runChildrenAction(ctx context.Context, client *api.Client, opts *childrenAc
 	}
 	var matches []api.Project
 	for _, c := range allChildren {
-		if c.Version == revision {
+		if revision == "" || c.Version == revision {
 			matches = append(matches, c)
 		}
 	}
 	if len(matches) == 0 {
-		fmt.Fprintf(out, "No children of '%s' match version '%s'. Nothing to do.\n", parent.Label(), revision)
+		if revision == "" {
+			fmt.Fprintf(out, "'%s' has no children. Nothing to do.\n", parent.Label())
+		} else {
+			fmt.Fprintf(out, "No children of '%s' match version '%s'. Nothing to do.\n", parent.Label(), revision)
+		}
 		return nil
 	}
 
@@ -240,14 +361,14 @@ func runChildrenAction(ctx context.Context, client *api.Client, opts *childrenAc
 	}
 
 	// 5. Apply.
-	uuids := make([]string, len(matches))
-	for i, m := range matches {
-		uuids[i] = m.UUID
-	}
-	if err := action.apply(ctx, client, uuids); err != nil {
+	if err := action.apply(ctx, client, matches, out); err != nil {
 		return fmt.Errorf("%s failed: %w", action.noun, err)
 	}
-	fmt.Fprintf(out, "%s %d project(s).\n", capitalize(action.pastTense), len(matches))
+	if action.summary != nil {
+		fmt.Fprintln(out, action.summary(len(matches)))
+	} else {
+		fmt.Fprintf(out, "%s %d project(s).\n", capitalize(action.pastTense), len(matches))
+	}
 	return nil
 }
 
@@ -286,9 +407,15 @@ func pickCollectionProject(collections []api.Project, reader *bufio.Reader, out 
 	return collections[choice-1], nil
 }
 
+// renderOverview lists matches; an empty version means "all children".
 func renderOverview(matches []api.Project, version string, parent api.Project, out io.Writer) {
-	fmt.Fprintf(out, "The following %d child project(s) of '%s' match version '%s':\n\n",
-		len(matches), parent.Label(), version)
+	if version == "" {
+		fmt.Fprintf(out, "The following %d child project(s) of '%s' are selected:\n\n",
+			len(matches), parent.Label())
+	} else {
+		fmt.Fprintf(out, "The following %d child project(s) of '%s' match version '%s':\n\n",
+			len(matches), parent.Label(), version)
+	}
 
 	nameWidth := 4
 	for _, m := range matches {

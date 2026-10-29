@@ -10,8 +10,8 @@ all: build
 build: ## Build the dtrack binary into ./dtrack
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
 
-install: ## Install dtrack into $GOBIN
-	go install -ldflags "$(LDFLAGS)" $(PKG)
+install: build
+	sudo cp dtrack /usr/local/bin/dtrack
 
 test: ## Run the test suite
 	go test ./...

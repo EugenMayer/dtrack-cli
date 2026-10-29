@@ -44,7 +44,7 @@ completes and reports the resulting cloned project. Pass --no-wait to skip
 polling and just report the token.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}

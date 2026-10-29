@@ -46,6 +46,25 @@ func TestDeactivateProject_AlreadyInactiveIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestAnalyzeProject_ConflictIsAnalysisInProgress(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/version", writeVersion)
+	mux.HandleFunc("POST /api/v1/finding/project/{uuid}/analyze", func(w http.ResponseWriter, r *http.Request) {
+		// v5 refuses a second analysis while one is running for the project.
+		w.WriteHeader(http.StatusConflict)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client, err := New(srv.URL, "test-key")
+	if err != nil {
+		t.Fatalf("building client: %v", err)
+	}
+	if _, err := client.AnalyzeProject(context.Background(), uuidSample); !errors.Is(err, ErrAnalysisInProgress) {
+		t.Fatalf("expected ErrAnalysisInProgress for a 409, got %v", err)
+	}
+}
+
 func TestDeactivateProject_OtherErrorsStillPropagate(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/version", writeVersion)
@@ -66,7 +85,7 @@ func TestDeactivateProject_OtherErrorsStillPropagate(t *testing.T) {
 
 // TestAuthFailuresPropagateAsErrors locks in that every client method
 // surfaces a non-nil error on HTTP 401/403, across every verb the client
-// uses (GET, PUT, PATCH, DELETE). Every command's RunE ultimately calls one
+// uses (GET, POST, PUT, PATCH, DELETE). Every command's RunE ultimately calls one
 // of these methods, and cmd/dtrack's main() exits 1 on any non-nil error, so
 // this is what guarantees "401/403 -> exit code 1" for every command.
 func TestAuthFailuresPropagateAsErrors(t *testing.T) {
@@ -118,6 +137,10 @@ func TestAuthFailuresPropagateAsErrors(t *testing.T) {
 				},
 				"UploadBOM": func() error {
 					_, err := client.UploadBOM(ctx, "Zm9v", BOMUploadOptions{ProjectUUID: uuidSample})
+					return err
+				},
+				"AnalyzeProject": func() error {
+					_, err := client.AnalyzeProject(ctx, uuidSample)
 					return err
 				},
 				"IsTokenProcessing": func() error {

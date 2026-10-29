@@ -25,7 +25,7 @@ func newProjectGetCmd(flags *rootFlags) *cobra.Command {
 		Long:  `Get a single project by UUID and print its details.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := flags.newClient()
+			client, err := flags.newClient(cmd.Context())
 			if err != nil {
 				return err
 			}
