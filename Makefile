@@ -11,7 +11,9 @@ build: ## Build the dtrack binary into ./dtrack
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) $(PKG)
 
 install: build
+	chmod +x dtrack
 	sudo cp dtrack /usr/local/bin/dtrack
+
 
 test: ## Run the test suite
 	go test ./...
